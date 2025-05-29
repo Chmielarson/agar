@@ -16,6 +16,7 @@ const {
 const fs = require('fs');
 const bs58 = require('bs58');
 const GameEngine = require('./game/GameEngine');
+const NetworkOptimizer = require('./game/NetworkOptimizer'); // NOWY IMPORT
 
 dotenv.config();
 
@@ -225,6 +226,7 @@ async function forceCleanupPlayer(playerAddress) {
 
 // Pojedyncza globalna instancja gry
 const globalGame = new GameEngine();
+const networkOptimizer = new NetworkOptimizer(); // NOWA INSTANCJA
 
 // Ustaw callback dla aktualizacji blockchain - TERAZ BĘDZIE DZIAŁAĆ!
 globalGame.onPlayerEaten = async (eaterAddress, eatenAddress, eatenValue) => {
@@ -414,6 +416,7 @@ app.get('/api/admin/active-players', (req, res) => {
     solDisplay: (p.solValue / 1000000000).toFixed(4),
     isAlive: p.isAlive,
     mass: Math.floor(p.mass),
+    cells: p.cells.length, // NOWA INFORMACJA
     position: `${Math.floor(p.x)}, ${Math.floor(p.y)}`,
     currentZone: p.currentZone,
     zoneName: globalGame.zones[p.currentZone - 1].name
@@ -424,6 +427,43 @@ app.get('/api/admin/active-players', (req, res) => {
     totalSolInGame: (globalGame.totalSolInGame / 1000000000).toFixed(4),
     players,
     serverWallet: serverWallet ? serverWallet.publicKey.toString() : 'not configured'
+  });
+});
+
+// NOWY ENDPOINT: Network stats
+app.get('/api/admin/network-stats', (req, res) => {
+  const stats = networkOptimizer.getStats();
+  const gameStats = globalGame.getGameState();
+  
+  res.json({
+    optimizer: stats,
+    game: {
+      players: gameStats.playerCount,
+      food: gameStats.foodCount,
+      totalSol: gameStats.totalSolDisplay
+    },
+    server: {
+      memory: process.memoryUsage(),
+      uptime: process.uptime()
+    }
+  });
+});
+
+// NOWY ENDPOINT: Toggle optimalizacji
+app.post('/api/admin/toggle-optimization', (req, res) => {
+  const { compression, adaptiveTickrate } = req.body;
+  
+  if (compression !== undefined) {
+    networkOptimizer.compressionEnabled = compression;
+  }
+  
+  if (adaptiveTickrate !== undefined) {
+    networkOptimizer.adaptiveTickrateEnabled = adaptiveTickrate;
+  }
+  
+  res.json({
+    compression: networkOptimizer.compressionEnabled,
+    adaptiveTickrate: networkOptimizer.adaptiveTickrateEnabled
   });
 });
 
@@ -648,16 +688,17 @@ io.on('connection', (socket) => {
   });
 });
 
-// Funkcja broadcastująca stan gry
+// ZMIENIONA funkcja broadcastująca stan gry z optymalizacjami
 function broadcastGameState() {
   const gameState = globalGame.getGameState();
   
-  // Wyślij globalny stan do wszystkich
-  io.to('game').emit('game_state', gameState);
+  // Wyślij globalny stan do wszystkich (rzadziej)
+  if (Date.now() % 1000 < 16) { // Co sekundę
+    io.to('game').emit('game_state', gameState);
+  }
   
   // Wyślij spersonalizowany widok każdemu graczowi
   let broadcastCount = 0;
-  let offlinePlayersEaten = [];
   
   for (const [playerAddress, socketId] of playerSockets) {
     const playerView = globalGame.getPlayerView(playerAddress);
@@ -666,14 +707,13 @@ function broadcastGameState() {
       // Gracz nie ma widoku - został zjedzony lub nie istnieje
       const player = globalGame.players.get(playerAddress);
       
-      // Jeśli gracza nie ma w ogóle w mapie = został zjedzony i usunięty
       if (!player) {
         // Wyślij event eliminacji
         io.to(socketId).emit('player_eliminated', {
           playerAddress,
           reason: 'You were eaten by another player!'
         });
-        // Usuń mapowania dla zjedzonego gracza
+        // Usuń mapowania
         playerSockets.delete(playerAddress);
         
         const socketPlayer = socketPlayers.get(socketId);
@@ -686,27 +726,46 @@ function broadcastGameState() {
       continue;
     }
     
-    io.to(socketId).emit('player_view', playerView);
+    // Optymalizuj dane przed wysłaniem
+    if (networkOptimizer.adaptiveTickrateEnabled) {
+      const viewer = globalGame.players.get(playerAddress);
+      if (viewer) {
+        // Optymalizuj listę graczy
+        const optimizedPlayers = networkOptimizer.optimizePlayerList(
+          viewer,
+          Array.from(globalGame.players.values()).filter(p => p.isAlive),
+          playerView.viewRadius || 1000
+        );
+        
+        // Zastąp listę graczy zoptymalizowaną wersją
+        const optimizedView = {
+          ...playerView,
+          players: optimizedPlayers.map(p => p.type === 'full' ? p.data : p)
+        };
+        
+        io.to(socketId).emit('player_view', optimizedView);
+      } else {
+        io.to(socketId).emit('player_view', playerView);
+      }
+    } else {
+      io.to(socketId).emit('player_view', playerView);
+    }
+    
     broadcastCount++;
   }
   
-  // Sprawdź graczy którzy nie mają aktywnego połączenia ale są w grze
-  for (const [playerAddress, player] of globalGame.players) {
-    if (!player.isAlive && !playerSockets.has(playerAddress)) {
-      // Gracz był offline gdy został zjedzony
-      offlinePlayersEaten.push(playerAddress);
-    }
+  // Czyść cache co 10 sekund
+  if (Date.now() % 10000 < 16) {
+    networkOptimizer.cleanup();
   }
   
   // Log co 5 sekund
   if (Date.now() % 5000 < 16) {
-    console.log(`Broadcasting to ${broadcastCount} players, game state:`, {
+    const stats = networkOptimizer.getStats();
+    console.log(`Broadcasting to ${broadcastCount} players, optimizer stats:`, {
+      ...stats,
       activePlayers: gameState.playerCount,
-      totalPlayers: playerSockets.size,
-      foodCount: gameState.foodCount,
-      zoneStats: gameState.zoneStats,
-      offlinePlayersEaten: offlinePlayersEaten.length,
-      blockchainUpdatesEnabled: !!serverWallet
+      foodCount: gameState.foodCount
     });
   }
 }

@@ -2,6 +2,7 @@
 const Player = require('./Player');
 const Food = require('./Food');
 const Physics = require('./Physics');
+const Cell = require('./Cell');
 
 class GameEngine {
   constructor() {
@@ -22,6 +23,7 @@ class GameEngine {
     
     this.players = new Map();
     this.food = new Map();
+    this.ejectedMass = new Map(); // Wyrzucona masa
     this.physics = new Physics();
     this.isRunning = false;
     this.lastUpdate = Date.now();
@@ -263,18 +265,22 @@ class GameEngine {
   }
   
   convertPlayerToFood(player) {
-    // Rozdziel masę gracza na jedzenie w jego strefie
-    const numFood = Math.min(Math.floor(player.mass / 20), 10);
-    const foodMass = player.mass / numFood;
-    const zoneId = this.getZoneFromPosition(player.x, player.y);
+    // Rozdziel masę gracza na jedzenie
+    const totalMass = player.getTotalMass();
+    const numFood = Math.min(Math.floor(totalMass / 20), 10);
+    if (numFood === 0) return;
+    
+    const foodMass = totalMass / numFood;
+    const centerPos = player.getCenterPosition();
+    const zoneId = this.getZoneFromPosition(centerPos.x, centerPos.y);
     
     for (let i = 0; i < numFood; i++) {
       const angle = (Math.PI * 2 * i) / numFood;
       const distance = player.radius + Math.random() * 50;
       
       const food = new Food(
-        player.x + Math.cos(angle) * distance,
-        player.y + Math.sin(angle) * distance,
+        centerPos.x + Math.cos(angle) * distance,
+        centerPos.y + Math.sin(angle) * distance,
         foodMass
       );
       food.zoneId = zoneId;
@@ -296,14 +302,24 @@ class GameEngine {
       }
     }
     
-    // Obsługa podziału (space) - boost
+    // Obsługa podziału (space) - NOWY SYSTEM
     if (input.split && player.canSplit()) {
-      player.split();
+      const newCells = player.split();
+      // Nowe kulki są już dodane do gracza
     }
     
     // Obsługa wyrzucania masy (W)
     if (input.eject && player.canEject()) {
-      this.ejectMass(player);
+      const ejectedCell = player.eject();
+      if (ejectedCell) {
+        // Konwertuj na Food dla kompatybilności
+        const food = new Food(ejectedCell.x, ejectedCell.y, ejectedCell.mass);
+        food.velocityX = ejectedCell.velocityX;
+        food.velocityY = ejectedCell.velocityY;
+        food.zoneId = this.getZoneFromPosition(ejectedCell.x, ejectedCell.y);
+        food.ownerId = playerAddress; // Oznacz kto wyrzucił
+        this.food.set(food.id, food);
+      }
     }
   }
   
@@ -371,33 +387,50 @@ class GameEngine {
         
         player.update(deltaTime, this.mapSize);
         
-        // Sprawdź czy gracz próbuje wejść do nowej strefy
-        const newZone = this.getZoneFromPosition(player.x, player.y);
-        
-        if (newZone !== oldZone) {
-          // Sprawdź czy gracz może wejść do nowej strefy
-          if (!this.canPlayerEnterZone(player, newZone)) {
-            // Zablokuj ruch - przywróć starą pozycję
-            player.x = oldX;
-            player.y = oldY;
-            
-            // Odbij gracza od bariery
+        // Sprawdź strefę dla każdej kulki gracza
+        for (const cell of player.cells) {
+          const cellZone = this.getZoneFromPosition(cell.x, cell.y);
+          
+          if (cellZone !== oldZone && !this.canPlayerEnterZone(player, cellZone)) {
+            // Zablokuj ruch kulki
             const bounds = this.getZoneBounds(oldZone);
-            player.x = Math.max(bounds.minX + player.radius, Math.min(bounds.maxX - player.radius, player.x));
-            player.y = Math.max(bounds.minY + player.radius, Math.min(bounds.maxY - player.radius, player.y));
-          } else {
-            // Gracz może wejść - zaktualizuj jego strefę
-            player.currentZone = newZone;
-            console.log(`Player ${player.address} entered Zone ${newZone} (${this.zones[newZone - 1].name})`);
+            cell.x = Math.max(bounds.minX + cell.radius, Math.min(bounds.maxX - cell.radius, cell.x));
+            cell.y = Math.max(bounds.minY + cell.radius, Math.min(bounds.maxY - cell.radius, cell.y));
+            
+            // Zatrzymaj prędkość w kierunku bariery
+            if (cell.x <= bounds.minX + cell.radius || cell.x >= bounds.maxX - cell.radius) {
+              cell.velocityX = 0;
+            }
+            if (cell.y <= bounds.minY + cell.radius || cell.y >= bounds.maxY - cell.radius) {
+              cell.velocityY = 0;
+            }
           }
         }
         
-        // Aktualizuj czy gracz może awansować do wyższej strefy
+        // Aktualizuj strefę gracza na podstawie jego centrum
+        const newZone = this.getZoneFromPosition(player.x, player.y);
+        if (newZone !== player.currentZone && this.canPlayerEnterZone(player, newZone)) {
+          player.currentZone = newZone;
+          console.log(`Player ${player.address} entered Zone ${newZone} (${this.zones[newZone - 1].name})`);
+        }
+        
+        // Aktualizuj czy gracz może awansować
         const appropriateZone = this.getAppropriateZoneForPlayer(player.solValue);
-        if (appropriateZone > player.currentZone) {
-          player.canAdvanceToZone = appropriateZone;
-        } else {
-          player.canAdvanceToZone = null;
+        player.canAdvanceToZone = appropriateZone > player.currentZone ? appropriateZone : null;
+        
+        // Kolizje między kulkami tego samego gracza
+        if (player.cells.length > 1) {
+          for (let i = 0; i < player.cells.length; i++) {
+            for (let j = i + 1; j < player.cells.length; j++) {
+              const cell1 = player.cells[i];
+              const cell2 = player.cells[j];
+              
+              // Jeśli nie mogą się jeszcze połączyć, odpychaj je
+              if (!cell1.canMergeWith(cell2)) {
+                this.physics.resolveSamePlayerCollision(cell1, cell2);
+              }
+            }
+          }
         }
       }
     }
@@ -427,7 +460,167 @@ class GameEngine {
     // Sprawdź kolizje
     this.checkCollisions();
     
-    // ZMIANA: Dynamiczne uzupełnianie jedzenia
+    // Dynamiczne uzupełnianie jedzenia
+    this.spawnFood();
+    
+    // Aktualizuj ranking
+    this.updateLeaderboard();
+    
+    // Co 30 sekund loguj statystyki
+    if (now % 30000 < 16) {
+      const activePlayers = Array.from(this.players.values()).filter(p => p.isAlive).length;
+      console.log(`Game stats: ${this.food.size} food, ${activePlayers} active players`);
+    }
+  }
+  
+  checkCollisions() {
+    const players = Array.from(this.players.values()).filter(p => p.isAlive && !p.isCashingOut);
+    const playersToRemove = [];
+    
+    // Kolizje gracz-jedzenie (dla każdej kulki)
+    for (const player of players) {
+      const foodToRemove = [];
+      
+      for (const [foodId, food] of this.food) {
+        const collisions = this.physics.checkPlayerFoodCollision(player, food);
+        
+        for (const collision of collisions) {
+          // Dodaj masę do konkretnej kulki
+          collision.cell.mass += food.mass;
+          collision.cell.updateRadius();
+          player.score += Math.floor(food.mass);
+          foodToRemove.push(foodId);
+          break; // Jedzenie może być zjedzone tylko raz
+        }
+      }
+      
+      // Usuń zjedzone jedzenie
+      for (const foodId of foodToRemove) {
+        this.food.delete(foodId);
+      }
+    }
+    
+    // Kolizje gracz-gracz (teraz bardziej skomplikowane)
+    for (let i = 0; i < players.length; i++) {
+      for (let j = i + 1; j < players.length; j++) {
+        const player1 = players[i];
+        const player2 = players[j];
+        
+        // Pomiń graczy w trakcie cash out
+        if (player1.isCashingOut || player2.isCashingOut) continue;
+        
+        // Sprawdź kolizje między wszystkimi kulkami
+        const collisions = this.physics.checkPlayerCollision(player1, player2);
+        
+        if (collisions.length > 0) {
+          // Oznacz OBYDWU graczy jako w walce
+          player1.enterCombat();
+          player2.enterCombat();
+          
+          // Sprawdź czy któryś gracz może zjeść drugiego CAŁKOWICIE
+          if (this.physics.canPlayerEatPlayer(player1, player2)) {
+            console.log(`Player ${player1.address} is eating player ${player2.address}`);
+            const eatenValue = player2.solValue;
+            player1.eatPlayer(player2);
+            playersToRemove.push(player2.address);
+            
+            // Wywołaj callback do aktualizacji blockchain
+            if (this.onPlayerEaten) {
+              this.onPlayerEaten(player1.address, player2.address, eatenValue);
+            }
+            
+          } else if (this.physics.canPlayerEatPlayer(player2, player1)) {
+            console.log(`Player ${player2.address} is eating player ${player1.address}`);
+            const eatenValue = player1.solValue;
+            player2.eatPlayer(player1);
+            playersToRemove.push(player1.address);
+            
+            // Wywołaj callback do aktualizacji blockchain
+            if (this.onPlayerEaten) {
+              this.onPlayerEaten(player2.address, player1.address, eatenValue);
+            }
+          } else {
+            // WAŻNE: Sprawdź pojedyncze kolizje kulek
+            for (const collision of collisions) {
+              if (collision.canEat && this.physics.checkCircleCollisionWithOverlap(collision.cell1, collision.cell2, 0.8)) {
+                if (this.physics.canEat(collision.cell1, collision.cell2)) {
+                  // cell1 zjada cell2
+                  collision.cell1.mass += collision.cell2.mass;
+                  collision.cell1.updateRadius();
+                  
+                  // Usuń zjedzoną kulkę
+                  const idx = player2.cells.indexOf(collision.cell2);
+                  if (idx > -1) {
+                    player2.cells.splice(idx, 1);
+                  }
+                  
+                  // WAŻNE: Jeśli gracz stracił WSZYSTKIE kulki
+                  if (player2.cells.length === 0) {
+                    player2.die();
+                    playersToRemove.push(player2.address);
+                    
+                    // TYLKO TERAZ transferuj SOL
+                    const eatenValue = player2.solValue;
+                    player1.solValue += eatenValue;
+                    player1.totalSolEarned += eatenValue;
+                    player1.playersEaten++;
+                    player1.updateColor();
+                    
+                    console.log(`Player ${player2.address} lost all cells and was eliminated. ${player1.address} gained ${eatenValue} lamports`);
+                    
+                    if (this.onPlayerEaten) {
+                      this.onPlayerEaten(player1.address, player2.address, eatenValue);
+                    }
+                  } else {
+                    console.log(`Player ${player2.address} lost a cell, now has ${player2.cells.length} cells remaining`);
+                  }
+                  
+                } else if (this.physics.canEat(collision.cell2, collision.cell1)) {
+                  // cell2 zjada cell1
+                  collision.cell2.mass += collision.cell1.mass;
+                  collision.cell2.updateRadius();
+                  
+                  // Usuń zjedzoną kulkę
+                  const idx = player1.cells.indexOf(collision.cell1);
+                  if (idx > -1) {
+                    player1.cells.splice(idx, 1);
+                  }
+                  
+                  // WAŻNE: Jeśli gracz stracił WSZYSTKIE kulki
+                  if (player1.cells.length === 0) {
+                    player1.die();
+                    playersToRemove.push(player1.address);
+                    
+                    // TYLKO TERAZ transferuj SOL
+                    const eatenValue = player1.solValue;
+                    player2.solValue += eatenValue;
+                    player2.totalSolEarned += eatenValue;
+                    player2.playersEaten++;
+                    player2.updateColor();
+                    
+                    console.log(`Player ${player1.address} lost all cells and was eliminated. ${player2.address} gained ${eatenValue} lamports`);
+                    
+                    if (this.onPlayerEaten) {
+                      this.onPlayerEaten(player2.address, player1.address, eatenValue);
+                    }
+                  } else {
+                    console.log(`Player ${player1.address} lost a cell, now has ${player1.cells.length} cells remaining`);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // Usuń graczy po zakończeniu sprawdzania kolizji
+    for (const playerAddress of playersToRemove) {
+      this.removePlayer(playerAddress, false);
+    }
+  }
+  
+  spawnFood() {
     const targetFoodPerZone = this.calculateTargetFoodPerZone();
     
     for (let zoneId = 1; zoneId <= 4; zoneId++) {
@@ -441,92 +634,9 @@ class GameEngine {
       
       // Dodaj brakujące jedzenie
       const foodToAdd = Math.max(0, targetFoodPerZone - foodInZone);
-      for (let i = 0; i < foodToAdd; i++) {
+      for (let i = 0; i < foodToAdd && this.food.size < this.maxTotalFood; i++) {
         this.spawnFoodInZone(zoneId, bounds);
       }
-    }
-    
-    // Aktualizuj ranking
-    this.updateLeaderboard();
-    
-    // Co 30 sekund loguj statystyki jedzenia
-    if (now % 30000 < 16) {
-      const activePlayers = Array.from(this.players.values()).filter(p => p.isAlive).length;
-      console.log(`Food stats: ${this.food.size} total, target per zone: ${targetFoodPerZone}, active players: ${activePlayers}`);
-    }
-  }
-  
-  checkCollisions() {
-    const players = Array.from(this.players.values()).filter(p => p.isAlive && !p.isCashingOut);
-    const playersToRemove = [];
-    
-    // Kolizje gracz-jedzenie
-    for (const player of players) {
-      const foodToRemove = [];
-      
-      for (const [foodId, food] of this.food) {
-        if (this.physics.checkCircleCollision(player, food)) {
-          if (player.radius > food.radius) {
-            player.eatFood(food.mass);
-            foodToRemove.push(foodId);
-          }
-        }
-      }
-      
-      // Usuń zjedzone jedzenie
-      for (const foodId of foodToRemove) {
-        this.food.delete(foodId);
-      }
-    }
-    
-    // Kolizje gracz-gracz
-    for (let i = 0; i < players.length; i++) {
-      for (let j = i + 1; j < players.length; j++) {
-        const player1 = players[i];
-        const player2 = players[j];
-        
-        // Pomiń graczy w trakcie cash out
-        if (player1.isCashingOut || player2.isCashingOut) continue;
-        
-        // NAJPIERW sprawdź czy gracze się dotykają (dla combat log)
-        if (this.physics.checkCircleCollision(player1, player2)) {
-          // Oznacz OBYDWU graczy jako w walce - niezależnie od tego czy ktoś zostanie zjedzony
-          player1.enterCombat();
-          player2.enterCombat();
-          
-          // TERAZ sprawdź czy ktoś kogoś zjada (80% pokrycia)
-          if (this.physics.checkCircleCollisionWithOverlap(player1, player2, 0.8)) {
-            // Większy gracz zjada mniejszego
-            if (player1.radius > player2.radius * 1.1) {
-              console.log(`Player ${player1.address} is eating player ${player2.address}`);
-              const eatenValue = player2.solValue;
-              player1.eatPlayer(player2);
-              playersToRemove.push(player2.address);
-              
-              // Wywołaj callback do aktualizacji blockchain
-              if (this.onPlayerEaten) {
-                this.onPlayerEaten(player1.address, player2.address, eatenValue);
-              }
-              
-            } else if (player2.radius > player1.radius * 1.1) {
-              console.log(`Player ${player2.address} is eating player ${player1.address}`);
-              const eatenValue = player1.solValue;
-              player2.eatPlayer(player1);
-              playersToRemove.push(player1.address);
-              
-              // Wywołaj callback do aktualizacji blockchain
-              if (this.onPlayerEaten) {
-                this.onPlayerEaten(player2.address, player1.address, eatenValue);
-              }
-            }
-          }
-        }
-      }
-    }
-    
-    // Usuń graczy po zakończeniu sprawdzania kolizji
-    for (const playerAddress of playersToRemove) {
-      this.removePlayer(playerAddress, false);
     }
   }
   
@@ -602,31 +712,56 @@ class GameEngine {
       return null;
     }
     
-    // Obszar widoczny dla gracza
+    // Oblicz obszar widoczny dla gracza (wszystkie jego kulki)
+    const viewBounds = this.physics.calculateViewBounds(player);
+    const centerPos = player.getCenterPosition();
+    
+    // Bazowy promień widoku zależy od rozmiaru gracza
     const baseViewRadius = 600;
-    const viewRadius = baseViewRadius + player.radius * 3;
+    const sizeMultiplier = Math.sqrt(player.getTotalMass()) * 2;
+    const viewRadius = baseViewRadius + sizeMultiplier;
     
     // Filtruj obiekty w zasięgu wzroku
-    const visiblePlayers = Array.from(this.players.values())
-      .filter(p => p.isAlive && 
-        this.physics.getDistance(player, p) < viewRadius + p.radius)
-      .map(p => ({
-        id: p.address,
-        x: p.x,
-        y: p.y,
-        radius: p.radius,
-        color: p.color,
-        nickname: p.nickname,
-        mass: p.mass,
-        isMe: p.address === playerAddress,
-        isBoosting: p.isBoosting,
-        solValue: p.solValue,
-        solDisplay: (p.solValue / 1000000000).toFixed(4),
-        zone: p.currentZone
-      }));
+    const visiblePlayers = [];
+    
+    for (const [otherAddress, otherPlayer] of this.players) {
+      if (!otherPlayer.isAlive) continue;
+      
+      // Sprawdź czy którakolwiek kulka jest widoczna
+      let isVisible = false;
+      
+      for (const cell of otherPlayer.cells) {
+        if (this.physics.isInViewport(player, cell, viewRadius)) {
+          isVisible = true;
+          break;
+        }
+      }
+      
+      if (isVisible) {
+        // Przekształć dane gracza dla klienta
+        const playerData = {
+          id: otherPlayer.address,
+          nickname: otherPlayer.nickname,
+          color: otherPlayer.color,
+          isMe: otherPlayer.address === playerAddress,
+          solValue: otherPlayer.solValue,
+          solDisplay: (otherPlayer.solValue / 1000000000).toFixed(4),
+          zone: otherPlayer.currentZone,
+          cells: otherPlayer.cells.map(cell => ({
+            id: cell.id,
+            x: cell.x,
+            y: cell.y,
+            radius: cell.radius,
+            mass: cell.mass
+          }))
+        };
+        
+        visiblePlayers.push(playerData);
+      }
+    }
     
     const visibleFood = Array.from(this.food.values())
-      .filter(f => this.physics.getDistance(player, f) < viewRadius + f.radius)
+      .filter(f => this.physics.isInViewport(player, f, viewRadius))
       .map(f => ({
         id: f.id,
         x: f.x,
@@ -636,13 +771,13 @@ class GameEngine {
       }));
     
     // Informacje o barierach stref
-    const currentZone = this.getZoneFromPosition(player.x, player.y);
+    const currentZone = this.getZoneFromPosition(centerPos.x, centerPos.y);
     const zoneBounds = this.getZoneBounds(currentZone);
     const barriers = [];
     
     // Sprawdź które bariery są widoczne
     // Górna bariera
-    if (Math.abs(player.y - zoneBounds.minY) < viewRadius && currentZone > 2) {
+    if (Math.abs(centerPos.y - zoneBounds.minY) < viewRadius && currentZone > 2) {
       barriers.push({
         type: 'horizontal',
         x: zoneBounds.minX,
@@ -653,7 +788,7 @@ class GameEngine {
     }
     
     // Dolna bariera
-    if (Math.abs(player.y - zoneBounds.maxY) < viewRadius && currentZone < 3) {
+    if (Math.abs(centerPos.y - zoneBounds.maxY) < viewRadius && currentZone < 3) {
       barriers.push({
         type: 'horizontal',
         x: zoneBounds.minX,
@@ -664,7 +799,7 @@ class GameEngine {
     }
     
     // Lewa bariera
-    if (Math.abs(player.x - zoneBounds.minX) < viewRadius && currentZone % 2 === 0) {
+    if (Math.abs(centerPos.x - zoneBounds.minX) < viewRadius && currentZone % 2 === 0) {
       barriers.push({
         type: 'vertical',
         x: zoneBounds.minX,
@@ -675,7 +810,7 @@ class GameEngine {
     }
     
     // Prawa bariera
-    if (Math.abs(player.x - zoneBounds.maxX) < viewRadius && currentZone % 2 === 1) {
+    if (Math.abs(centerPos.x - zoneBounds.maxX) < viewRadius && currentZone % 2 === 1) {
       barriers.push({
         type: 'vertical',
         x: zoneBounds.maxX,
@@ -688,13 +823,18 @@ class GameEngine {
     return {
       player: {
         address: player.address,
-        x: player.x,
-        y: player.y,
-        radius: player.radius,
-        mass: player.mass,
+        cells: player.cells.map(cell => ({
+          id: cell.id,
+          x: cell.x,
+          y: cell.y,
+          radius: cell.radius,
+          mass: cell.mass
+        })),
+        centerX: centerPos.x,
+        centerY: centerPos.y,
+        totalMass: player.getTotalMass(),
         color: player.color,
         isAlive: player.isAlive,
-        isBoosting: player.isBoosting,
         solValue: player.solValue,
         currentValueSol: player.getCurrentValueInSol(),
         playersEaten: player.playersEaten,
@@ -710,7 +850,9 @@ class GameEngine {
       zones: this.zones,
       currentZoneInfo: this.zones[currentZone - 1],
       leaderboard: this.leaderboard,
-      gameState: this.getGameState()
+      gameState: this.getGameState(),
+      viewRadius: viewRadius,
+      viewBounds: viewBounds
     };
   }
   

@@ -118,7 +118,8 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       console.log('Received player_view:', {
         hasPlayer: !!view.player,
         playerAlive: view.player?.isAlive,
-        playerPos: view.player ? `${Math.floor(view.player.x)}, ${Math.floor(view.player.y)}` : 'N/A',
+        playerCells: view.player?.cells?.length || 0,
+        centerPos: view.player ? `${Math.floor(view.player.centerX)}, ${Math.floor(view.player.centerY)}` : 'N/A',
         playersCount: view.players?.length || 0,
         foodCount: view.food?.length || 0,
         canCashOut: view.player?.canCashOut,
@@ -128,10 +129,10 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       setPlayerView(view);
       setConnectionStatus('In game');
       
-      // Initialize mouse position to player position
+      // Initialize mouse position to player center position
       if (view.player && inputRef.current.mouseX === 0 && inputRef.current.mouseY === 0) {
-        inputRef.current.mouseX = view.player.x;
-        inputRef.current.mouseY = view.player.y;
+        inputRef.current.mouseX = view.player.centerX;
+        inputRef.current.mouseY = view.player.centerY;
       }
     };
     
@@ -219,15 +220,21 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       const centerX = canvas.width / 2;
       const centerY = canvas.height / 2;
       
-      // Calculate zoom level
+      // Calculate zoom level based on view bounds
       const screenSize = Math.min(canvas.width, canvas.height);
       const baseZoom = screenSize / 800;
-      const playerZoom = Math.max(0.8, Math.min(1.5, 100 / (playerView.player.radius * 0.3 + 50)));
-      const zoomLevel = baseZoom * playerZoom;
+      let zoomFactor = 1;
+      
+      if (playerView.viewBounds && playerView.viewBounds.width && playerView.viewBounds.height) {
+        const maxDimension = Math.max(playerView.viewBounds.width, playerView.viewBounds.height);
+        zoomFactor = Math.max(0.5, Math.min(1.5, 800 / maxDimension));
+      }
+      
+      const zoomLevel = baseZoom * zoomFactor;
       
       // Calculate position in game world with zoom
-      const worldX = playerView.player.x + (x - centerX) / zoomLevel;
-      const worldY = playerView.player.y + (y - centerY) / zoomLevel;
+      const worldX = playerView.player.centerX + (x - centerX) / zoomLevel;
+      const worldY = playerView.player.centerY + (y - centerY) / zoomLevel;
       
       inputRef.current.mouseX = worldX;
       inputRef.current.mouseY = worldY;
@@ -412,8 +419,12 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
           {gameState && playerView?.player && (
             <div className="game-info">
               <div className="info-item">
-                <span>Your Mass:</span>
-                <span className="value">{Math.floor(playerView.player.mass)}</span>
+                <span>Your Cells:</span>
+                <span className="value">{playerView.player.cells?.length || 1}/{4}</span>
+              </div>
+              <div className="info-item">
+                <span>Total Mass:</span>
+                <span className="value">{Math.floor(playerView.player.totalMass || playerView.player.mass)}</span>
               </div>
               <div className="info-item">
                 <span>Players Eaten:</span>
@@ -442,10 +453,13 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
               <kbd>Mouse</kbd> - Move
             </div>
             <div className="control-item">
-              <kbd>Space</kbd> - Boost (-10% mass)
+              <kbd>Space</kbd> - Split (max 4 cells)
             </div>
             <div className="control-item">
               <kbd>W</kbd> - Eject mass
+            </div>
+            <div className="control-item" style={{ marginTop: '10px', fontSize: '12px', color: '#7F8C8D' }}>
+              Cells merge after ~30s
             </div>
           </div>
           

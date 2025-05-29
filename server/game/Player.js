@@ -1,19 +1,24 @@
 // server/game/Player.js
+const Cell = require('./Cell');
+
 class Player {
   constructor(address, x, y, nickname = null, initialStake = 0) {
     this.address = address;
     this.nickname = nickname || `Player ${address.substring(0, 6)}`;
-    this.x = x;
-    this.y = y;
     
     // Rozdzielenie masy i wartości SOL
-    // ZMIANA: Masa startowa zależy od stake - 1 SOL = 1000 masy
     const stakeSol = initialStake / 1000000000; // Konwersja na SOL
-    this.mass = 20 + (stakeSol * 1000); // Bazowa masa 20 + 1000 per SOL
+    const initialMass = 20 + (stakeSol * 1000); // Bazowa masa 20 + 1000 per SOL
+    
+    // System wielu kulek
+    this.cells = [
+      new Cell(x, y, initialMass, address)
+    ];
+    this.maxCells = 4; // Maksymalnie 4 kulki
+    
     this.solValue = initialStake; // Wartość w SOL (w lamports)
     this.initialStake = initialStake; // Ile gracz wniósł na start
     
-    this.radius = this.calculateRadius();
     this.color = this.generateColor();
     this.isAlive = true;
     this.score = 0;
@@ -22,24 +27,17 @@ class Player {
     this.currentZone = 1; // Domyślnie strefa 1
     this.canAdvanceToZone = null; // Czy może awansować do wyższej strefy
     
-    // Cel ruchu
+    // Cel ruchu (dla wszystkich kulek)
     this.targetX = x;
     this.targetY = y;
-    
-    // Prędkość
-    this.velocityX = 0;
-    this.velocityY = 0;
-    this.baseSpeed = 3;
-    this.isBoosting = false;
-    this.boostEndTime = 0;
     
     // Ograniczenia
     this.lastSplitTime = 0;
     this.lastEjectTime = 0;
-    this.splitCooldown = 3000; // 3 sekundy
+    this.splitCooldown = 100; // 100ms między podziałami
     this.ejectCooldown = 100; // 100ms
     
-    // NOWE: Combat log
+    // Combat log
     this.lastCombatTime = 0;
     this.combatCooldown = 10000; // 10 sekund
     
@@ -48,30 +46,86 @@ class Player {
     this.totalSolEarned = 0;
     
     // Cash out status
-    this.isCashingOut = false; // Czy gracz jest w trakcie cash out
+    this.isCashingOut = false;
     
-    console.log(`Player created: ${nickname} (${address}) with stake: ${initialStake} lamports (${stakeSol} SOL), starting mass: ${this.mass}`);
+    console.log(`Player created: ${nickname} (${address}) with stake: ${initialStake} lamports (${stakeSol} SOL), starting mass: ${initialMass}`);
   }
   
-  calculateRadius() {
-    // Promień bazuje tylko na masie, nie na wartości SOL
-    return Math.sqrt(this.mass / Math.PI) * 5;
+  // Pobierz całkowitą masę gracza
+  getTotalMass() {
+    return this.cells.reduce((sum, cell) => sum + cell.mass, 0);
   }
   
-  updateRadius() {
-    this.radius = this.calculateRadius();
+  // Pobierz środek masy (dla kamery)
+  getCenterPosition() {
+    if (this.cells.length === 0) return { x: 0, y: 0 };
+    
+    let totalMass = 0;
+    let centerX = 0;
+    let centerY = 0;
+    
+    for (const cell of this.cells) {
+      centerX += cell.x * cell.mass;
+      centerY += cell.y * cell.mass;
+      totalMass += cell.mass;
+    }
+    
+    return {
+      x: centerX / totalMass,
+      y: centerY / totalMass
+    };
+  }
+  
+  // Pobierz największą kulkę
+  getBiggestCell() {
+    return this.cells.reduce((biggest, cell) => 
+      cell.mass > biggest.mass ? cell : biggest
+    );
+  }
+  
+  // Oblicz promień gracza (dla kompatybilności)
+  get radius() {
+    // Zwróć promień największej kulki
+    const biggest = this.getBiggestCell();
+    return biggest ? biggest.radius : 0;
+  }
+  
+  // Pozycja gracza (dla kompatybilności)
+  get x() {
+    const center = this.getCenterPosition();
+    return center.x;
+  }
+  
+  get y() {
+    const center = this.getCenterPosition();
+    return center.y;
+  }
+  
+  // Masa gracza (dla kompatybilności)
+  get mass() {
+    return this.getTotalMass();
+  }
+  
+  set mass(value) {
+    // Gdy ustawiamy masę, rozdziel proporcjonalnie między kulki
+    if (this.cells.length === 0) return;
+    
+    const totalMass = this.getTotalMass();
+    const ratio = value / totalMass;
+    
+    for (const cell of this.cells) {
+      cell.mass *= ratio;
+      cell.updateRadius();
+    }
   }
   
   generateColor() {
-    // Kolor może się zmieniać w zależności od wartości SOL
     const hue = Math.floor(Math.random() * 360);
-    // Im więcej SOL, tym bardziej nasycony kolor
-    const saturation = Math.min(90, 50 + (this.solValue / 1000000000) * 40); // 1 SOL = 1B lamports
+    const saturation = Math.min(90, 50 + (this.solValue / 1000000000) * 40);
     return `hsl(${hue}, ${saturation}%, 50%)`;
   }
   
   updateColor() {
-    // Aktualizuj kolor gdy zmienia się wartość SOL
     const match = this.color.match(/hsl\((\d+),/);
     if (match) {
       const hue = parseInt(match[1]);
@@ -85,13 +139,11 @@ class Player {
     this.targetY = y;
   }
   
-  // NOWA METODA: Oznacz walkę
   enterCombat() {
     this.lastCombatTime = Date.now();
     console.log(`Player ${this.address} entered combat, cash out locked for 10s`);
   }
   
-  // NOWA METODA: Sprawdź czy gracz może zrobić cash out
   canCashOut() {
     if (!this.isAlive || this.isCashingOut) return false;
     
@@ -100,7 +152,6 @@ class Player {
     return timeSinceCombat >= this.combatCooldown;
   }
   
-  // NOWA METODA: Pobierz pozostały czas combat log
   getCombatCooldownRemaining() {
     const now = Date.now();
     const timeSinceCombat = now - this.lastCombatTime;
@@ -109,165 +160,230 @@ class Player {
       return 0;
     }
     
-    return Math.ceil((this.combatCooldown - timeSinceCombat) / 1000); // W sekundach
+    return Math.ceil((this.combatCooldown - timeSinceCombat) / 1000);
   }
   
   update(deltaTime, mapSize) {
     if (!this.isAlive) return;
     
-    // Sprawdź czy boost się skończył
-    if (this.isBoosting && Date.now() > this.boostEndTime) {
-      this.isBoosting = false;
-    }
-    
-    // Oblicz kierunek do celu
-    const dx = this.targetX - this.x;
-    const dy = this.targetY - this.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    
-    if (distance > 1) {
-      // Normalizuj kierunek
-      const dirX = dx / distance;
-      const dirY = dy / distance;
+    // Aktualizuj każdą kulkę
+    for (let i = this.cells.length - 1; i >= 0; i--) {
+      const cell = this.cells[i];
       
-      // Prędkość zależy od masy
-      let speed = this.baseSpeed * (30 / (Math.sqrt(this.mass) + 20));
+      // Oblicz kierunek do celu dla tej kulki
+      const dx = this.targetX - cell.x;
+      const dy = this.targetY - cell.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
       
-      // Minimalna prędkość
-      speed = Math.max(speed, this.baseSpeed * 0.3);
-      
-      // Jeśli boost jest aktywny, zwiększ prędkość
-      if (this.isBoosting) {
-        speed *= 3; // 3x szybciej podczas boosta
+      if (distance > 1) {
+        // Normalizuj kierunek
+        const dirX = dx / distance;
+        const dirY = dy / distance;
+        
+        // Prędkość zależy od masy kulki
+        const baseSpeed = 3;
+        let speed = baseSpeed * (30 / (Math.sqrt(cell.mass) + 20));
+        speed = Math.max(speed, baseSpeed * 0.3);
+        
+        // Dodaj siłę ruchu do prędkości
+        cell.velocityX += dirX * speed * 2;
+        cell.velocityY += dirY * speed * 2;
+        
+        // Ogranicz maksymalną prędkość
+        const maxSpeed = speed * 60;
+        const currentSpeed = Math.sqrt(cell.velocityX * cell.velocityX + cell.velocityY * cell.velocityY);
+        if (currentSpeed > maxSpeed) {
+          cell.velocityX = (cell.velocityX / currentSpeed) * maxSpeed;
+          cell.velocityY = (cell.velocityY / currentSpeed) * maxSpeed;
+        }
       }
       
-      // Aktualizuj prędkość
-      this.velocityX = dirX * speed;
-      this.velocityY = dirY * speed;
-      
-      // Aktualizuj pozycję
-      this.x += this.velocityX * deltaTime * 60;
-      this.y += this.velocityY * deltaTime * 60;
-      
-      // Ograniczenia mapy
-      const mapMargin = this.radius * 0.3;
-      this.x = Math.max(-mapMargin, Math.min(mapSize + mapMargin, this.x));
-      this.y = Math.max(-mapMargin, Math.min(mapSize + mapMargin, this.y));
+      // Aktualizuj pozycję kulki
+      cell.update(deltaTime, mapSize);
     }
     
-    // Stopniowa utrata masy (0.2% na sekundę) - NIE trać wartości SOL!
-    if (this.mass > 20) {
-      this.mass *= (1 - 0.002 * deltaTime);
-      this.updateRadius();
+    // Sprawdź możliwość połączenia kulek
+    this.tryMergeCells();
+  }
+  
+  tryMergeCells() {
+    if (this.cells.length <= 1) return;
+    
+    for (let i = 0; i < this.cells.length; i++) {
+      for (let j = i + 1; j < this.cells.length; j++) {
+        const cell1 = this.cells[i];
+        const cell2 = this.cells[j];
+        
+        // Sprawdź dystans
+        const dx = cell2.x - cell1.x;
+        const dy = cell2.y - cell1.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Jeśli kulki się stykają i mogą się połączyć
+        if (distance < cell1.radius + cell2.radius && cell1.canMergeWith(cell2)) {
+          // Połącz kulki
+          cell1.mass += cell2.mass;
+          cell1.updateRadius();
+          
+          // Ustaw pozycję na środek masy
+          cell1.x = (cell1.x * cell1.mass + cell2.x * cell2.mass) / (cell1.mass + cell2.mass);
+          cell1.y = (cell1.y * cell1.mass + cell2.y * cell2.mass) / (cell1.mass + cell2.mass);
+          
+          // Usuń drugą kulkę
+          this.cells.splice(j, 1);
+          j--;
+          
+          console.log(`Player ${this.address} merged cells. Now has ${this.cells.length} cells`);
+        }
+      }
     }
   }
   
-  // Jedzenie zwykłego jedzenia - dodaje tylko masę
-  eatFood(foodMass) {
-    this.mass += foodMass;
+  // Jedzenie zwykłego jedzenia
+  eatFood(foodMass, cellIndex = null) {
+    // Jeśli nie podano indeksu, znajdź najbliższą kulkę do jedzenia
+    if (cellIndex !== null && cellIndex < this.cells.length) {
+      this.cells[cellIndex].mass += foodMass;
+      this.cells[cellIndex].updateRadius();
+    } else if (this.cells.length > 0) {
+      // Dodaj do największej kulki
+      const biggest = this.getBiggestCell();
+      biggest.mass += foodMass;
+      biggest.updateRadius();
+    }
+    
     this.score += Math.floor(foodMass);
-    this.updateRadius();
   }
   
-  // Jedzenie gracza - dodaje masę i SOL
+  // Jedzenie gracza - TYLKO gdy zjada WSZYSTKIE jego kulki
   eatPlayer(otherPlayer) {
-    // Dodaj masę zjedzonego gracza
-    this.mass += otherPlayer.mass;
+    // Dodaj masę wszystkich kulek zjedzonego gracza
+    const totalEatenMass = otherPlayer.getTotalMass();
     
-    // WAŻNE: Dodaj CAŁĄ wartość SOL zjedzonego gracza
+    // Znajdź która kulka zjadła (największa)
+    const eaterCell = this.getBiggestCell();
+    if (eaterCell) {
+      eaterCell.mass += totalEatenMass;
+      eaterCell.updateRadius();
+    }
+    
+    // WAŻNE: Dodaj SOL tylko gdy gracz zostaje całkowicie wyeliminowany
     const gainedSol = otherPlayer.solValue;
     this.solValue += gainedSol;
     this.totalSolEarned += gainedSol;
     
-    // Bonus masy za wartość SOL gracza (1 SOL = 100 dodatkowej masy)
+    // Bonus masy za wartość SOL gracza
     const solBonus = (gainedSol / 1000000000) * 100;
-    this.mass += solBonus;
+    if (eaterCell) {
+      eaterCell.mass += solBonus;
+      eaterCell.updateRadius();
+    }
     
     this.playersEaten++;
-    this.score += Math.floor(otherPlayer.mass + solBonus);
+    this.score += Math.floor(totalEatenMass + solBonus);
     
-    this.updateRadius();
-    this.updateColor(); // Aktualizuj kolor po zmianie wartości SOL
+    this.updateColor();
     
     console.log(`Player ${this.address} ate ${otherPlayer.address}. ` +
-                `Gained ${gainedSol} lamports (${gainedSol/1000000000} SOL) and ${otherPlayer.mass + solBonus} mass. ` +
+                `Gained ${gainedSol} lamports (${gainedSol/1000000000} SOL) and ${totalEatenMass + solBonus} mass. ` +
                 `New total SOL value: ${this.solValue} lamports (${this.solValue/1000000000} SOL)`);
+  }
+  
+  // Zjedzenie pojedynczej kulki innego gracza (NIE transferuje SOL!)
+  eatEnemyCell(cell) {
+    // Znajdź kulkę która zjadła
+    const eaterCell = this.getBiggestCell();
+    if (eaterCell) {
+      eaterCell.mass += cell.mass;
+      eaterCell.updateRadius();
+    }
+    
+    this.score += Math.floor(cell.mass);
+    
+    console.log(`Player ${this.address} ate enemy cell with mass ${cell.mass}. No SOL transferred yet.`);
   }
   
   canSplit() {
     const now = Date.now();
     return (
-      this.mass >= 35 && 
-      now - this.lastSplitTime > this.splitCooldown &&
-      !this.isBoosting
+      this.cells.length < this.maxCells &&
+      this.getBiggestCell().mass >= 35 && 
+      now - this.lastSplitTime > this.splitCooldown
     );
   }
   
   canEject() {
     const now = Date.now();
     return (
-      this.mass >= 35 && 
+      this.getBiggestCell().mass >= 35 && 
       now - this.lastEjectTime > this.ejectCooldown
     );
   }
   
   split() {
-    if (!this.canSplit()) return false;
+    if (!this.canSplit()) return [];
     
-    // Zabierz 10% masy za boost
-    const boostCost = this.mass * 0.1;
-    this.mass -= boostCost;
-    this.updateRadius();
+    const newCells = [];
+    const cellsToSplit = [...this.cells].sort((a, b) => b.mass - a.mass);
+    const splitCount = Math.min(cellsToSplit.length, this.maxCells - this.cells.length);
     
-    // Aktywuj boost na 1.5 sekundy
-    this.isBoosting = true;
-    this.boostEndTime = Date.now() + 1500;
+    for (let i = 0; i < splitCount && this.cells.length < this.maxCells; i++) {
+      const cell = cellsToSplit[i];
+      if (cell.mass >= 35) {
+        const newCell = cell.split(this.targetX, this.targetY);
+        if (newCell) {
+          this.cells.push(newCell);
+          newCells.push(newCell);
+        }
+      }
+    }
     
     this.lastSplitTime = Date.now();
-    return true;
+    
+    console.log(`Player ${this.address} split into ${this.cells.length} cells`);
+    
+    return newCells;
   }
   
   eject() {
-    if (!this.canEject()) return false;
+    if (!this.canEject()) return null;
+    
+    // Wyrzuć z największej kulki
+    const biggestCell = this.getBiggestCell();
+    const ejectedMass = biggestCell.eject(this.targetX, this.targetY);
     
     this.lastEjectTime = Date.now();
-    return true;
+    
+    return ejectedMass;
   }
   
   die() {
     this.isAlive = false;
-    // Gracz zachowuje swoją wartość SOL nawet po śmierci
-    // (będzie mógł ją wypłacić lub użyć do respawnu)
-  }
-  
-  // Metoda do respawnu gracza
-  respawn(x, y) {
-    this.isAlive = true;
-    this.x = x;
-    this.y = y;
-    this.mass = 20; // Reset masy do startowej
-    // SOL value pozostaje bez zmian!
-    this.updateRadius();
-    this.updateColor();
+    this.cells = [];
   }
   
   // Oblicz aktualną wartość gracza w SOL
   getCurrentValueInSol() {
-    return this.solValue / 1000000000; // Konwersja z lamports na SOL
+    return this.solValue / 1000000000;
   }
   
   toJSON() {
     return {
       address: this.address,
       nickname: this.nickname,
-      x: this.x,
-      y: this.y,
-      mass: this.mass,
-      radius: this.radius,
+      cells: this.cells.map(cell => ({
+        id: cell.id,
+        x: cell.x,
+        y: cell.y,
+        mass: cell.mass,
+        radius: cell.radius
+      })),
+      totalMass: this.getTotalMass(),
+      centerX: this.x,
+      centerY: this.y,
       color: this.color,
       isAlive: this.isAlive,
       score: this.score,
-      isBoosting: this.isBoosting,
       solValue: this.solValue,
       currentValueSol: this.getCurrentValueInSol(),
       playersEaten: this.playersEaten,
