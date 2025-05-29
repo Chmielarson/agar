@@ -706,6 +706,9 @@ socket.on('join_game', ({ playerAddress, nickname, initialStake }) => {
 });
 
 // ZMIENIONA funkcja broadcastująca stan gry z optymalizacjami
+// Update the broadcastGameState function in server/index.js around line 648
+
+// ZMIENIONA funkcja broadcastująca stan gry z optymalizacjami
 function broadcastGameState() {
   const gameState = globalGame.getGameState();
   
@@ -716,6 +719,7 @@ function broadcastGameState() {
   
   // Wyślij spersonalizowany widok każdemu graczowi
   let broadcastCount = 0;
+  let successCount = 0;
   
   for (const [playerAddress, socketId] of playerSockets) {
     const playerView = globalGame.getPlayerView(playerAddress);
@@ -725,6 +729,7 @@ function broadcastGameState() {
       const player = globalGame.players.get(playerAddress);
       
       if (!player) {
+        console.log(`Player ${playerAddress} has no view and no player object - removing socket`);
         // Wyślij event eliminacji
         io.to(socketId).emit('player_eliminated', {
           playerAddress,
@@ -739,7 +744,18 @@ function broadcastGameState() {
         }
         
         console.log(`Removed socket mappings for eaten player ${playerAddress}`);
+      } else if (!player.isAlive) {
+        console.log(`Player ${playerAddress} is dead but still in players map`);
       }
+      continue;
+    }
+    
+    // Check if socket is still connected
+    const connectedSocket = io.sockets.sockets.get(socketId);
+    if (!connectedSocket) {
+      console.log(`Socket ${socketId} for player ${playerAddress} is not connected - removing`);
+      playerSockets.delete(playerAddress);
+      socketPlayers.delete(socketId);
       continue;
     }
     
@@ -761,11 +777,14 @@ function broadcastGameState() {
         };
         
         io.to(socketId).emit('player_view', optimizedView);
+        successCount++;
       } else {
         io.to(socketId).emit('player_view', playerView);
+        successCount++;
       }
     } else {
       io.to(socketId).emit('player_view', playerView);
+      successCount++;
     }
     
     broadcastCount++;
@@ -776,13 +795,15 @@ function broadcastGameState() {
     networkOptimizer.cleanup();
   }
   
-  // Log co 5 sekund
-  if (Date.now() % 5000 < 16) {
+  // Log co 5 sekund - ale tylko jeśli są gracze
+  if (Date.now() % 5000 < 16 && broadcastCount > 0) {
     const stats = networkOptimizer.getStats();
-    console.log(`Broadcasting to ${broadcastCount} players, optimizer stats:`, {
+    console.log(`Broadcasting to ${broadcastCount} players (${successCount} successful), optimizer stats:`, {
       ...stats,
       activePlayers: gameState.playerCount,
-      foodCount: gameState.foodCount
+      foodCount: gameState.foodCount,
+      socketCount: playerSockets.size,
+      playerMapSize: globalGame.players.size
     });
   }
 }

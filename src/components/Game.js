@@ -19,6 +19,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
   const [connectionStatus, setConnectionStatus] = useState('Connecting...');
   const [deathReason, setDeathReason] = useState('');
   const [combatCooldown, setCombatCooldown] = useState(0);
+  const [error, setError] = useState('');
   
   const canvasRef = useRef(null);
   const inputRef = useRef({
@@ -28,7 +29,9 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     eject: false
   });
   
-  // Timer dla combat cooldown
+  const joinTimeoutRef = useRef(null);
+  
+  // Timer for combat cooldown
   useEffect(() => {
     if (playerView?.player?.combatCooldownRemaining > 0) {
       setCombatCooldown(playerView.player.combatCooldownRemaining);
@@ -49,7 +52,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     }
   }, [playerView?.player?.combatCooldownRemaining]);
   
-  // Zapobiegaj przewijaniu strony podczas gry
+  // Prevent page scrolling during game
   useEffect(() => {
     const originalOverflow = document.body.style.overflow;
     const originalPosition = document.body.style.position;
@@ -78,6 +81,22 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     console.log('Setting up game connection...');
     setConnectionStatus('Joining game...');
     
+    // Monitor connection state
+    socket.on('connect', () => {
+      console.log('Socket connected:', socket.id);
+    });
+    
+    socket.on('disconnect', () => {
+      console.log('Socket disconnected');
+      setIsConnected(false);
+      setConnectionStatus('Disconnected from server');
+    });
+    
+    socket.on('connect_error', (error) => {
+      console.error('Socket connection error:', error);
+      setConnectionStatus('Connection error - retrying...');
+    });
+    
     // Join game immediately
     console.log('Emitting join_game:', {
       playerAddress: publicKey.toString(),
@@ -91,12 +110,28 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       initialStake: initialStake
     });
     
+    // Set a timeout for receiving the initial player view
+    joinTimeoutRef.current = setTimeout(() => {
+      if (!playerView && isConnected) {
+        console.error('Timeout waiting for player view');
+        setConnectionStatus('Server not responding - try refreshing');
+        setError('Failed to receive game data from server. Please refresh the page and try again.');
+        
+        // Try to force cleanup and leave
+        socket.disconnect();
+        onLeaveGame();
+      }
+    }, 10000); // 10 second timeout
+    
     // Set up event listeners
     const handleJoinedGame = (data) => {
       console.log('Received joined_game:', data);
       if (data.success) {
         setIsConnected(true);
-        setConnectionStatus('Connected to game');
+        setConnectionStatus('Connected to game - waiting for view');
+      } else {
+        setConnectionStatus('Failed to join game');
+        setError(data.error || 'Unknown error');
       }
     };
     
@@ -104,7 +139,8 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       console.log('Received game_state:', {
         playerCount: state.playerCount,
         foodCount: state.foodCount,
-        mapSize: state.mapSize
+        mapSize: state.mapSize,
+        timestamp: new Date().toISOString()
       });
       setGameState(state);
     };
@@ -123,9 +159,18 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         playersCount: view.players?.length || 0,
         foodCount: view.food?.length || 0,
         canCashOut: view.player?.canCashOut,
-        combatCooldown: view.player?.combatCooldownRemaining
+        combatCooldown: view.player?.combatCooldownRemaining,
+        timestamp: new Date().toISOString()
       });
       
+      // Clear timeout since we got the view
+      if (joinTimeoutRef.current) {
+        clearTimeout(joinTimeoutRef.current);
+        joinTimeoutRef.current = null;
+      }
+      
+      // Clear any error state when we get a valid view
+      setError('');
       setPlayerView(view);
       setConnectionStatus('In game');
       
@@ -156,6 +201,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     const handleError = (error) => {
       console.error('Game error:', error);
       setConnectionStatus(`Error: ${error.message || error}`);
+      setError(error.message || error);
       // If error is about being dead, show death screen
       if (error.message && error.message.includes('eaten')) {
         setIsPlayerDead(true);
@@ -175,14 +221,28 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     // Clean up
     return () => {
       console.log('Cleaning up game connection');
+      if (joinTimeoutRef.current) {
+        clearTimeout(joinTimeoutRef.current);
+      }
       socket.off('joined_game', handleJoinedGame);
       socket.off('game_state', handleGameState);
       socket.off('player_view', handlePlayerView);
       socket.off('player_eliminated', handlePlayerEliminated);
       socket.off('cash_out_result', handleCashOutResult);
       socket.off('error', handleError);
+      socket.off('connect');
+      socket.off('disconnect');
+      socket.off('connect_error');
     };
   }, [socket, publicKey, nickname, initialStake, onLeaveGame]);
+  
+  // Clear join timeout when we get player view
+  useEffect(() => {
+    if (playerView && joinTimeoutRef.current) {
+      clearTimeout(joinTimeoutRef.current);
+      joinTimeoutRef.current = null;
+    }
+  }, [playerView]);
   
   // Send player input
   useEffect(() => {
@@ -272,7 +332,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       return;
     }
     
-    // Sprawdź combat cooldown
+    // Check combat cooldown
     if (!playerView.player.canCashOut) {
       console.log('Cannot cash out - in combat!');
       return;
@@ -285,27 +345,27 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     try {
       setIsCashingOut(true);
       
-      // Najpierw usuń gracza z gry na serwerze
+      // First remove player from game on server
       socket.emit('initiate_cash_out', {
         playerAddress: publicKey.toString()
       });
       
-      // Czekaj na potwierdzenie usunięcia
+      // Wait for confirmation
       socket.once('cash_out_initiated', async (data) => {
         if (data.success) {
-          // Zapisz dane do cash out w localStorage - używaj wartości z serwera!
+          // Save data to cash out in localStorage - use server value!
           const cashOutData = {
             playerAddress: publicKey.toString(),
-            amount: data.amount, // Serwer zwraca aktualną wartość gracza
+            amount: data.amount, // Server returns actual value
             timestamp: Date.now()
           };
           
           localStorage.setItem('dotara_io_pending_cashout', JSON.stringify(cashOutData));
           
-          // Ustaw dane przed przekierowaniem
+          // Set data before redirect
           setPendingCashOut(cashOutData);
           
-          // Przejdź do widoku cash out
+          // Go to cash out view
           onLeaveGame(true); // true = pending cash out
         } else {
           alert('Failed to initiate cash out. Please try again.');
@@ -327,7 +387,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     return (lamports / 1000000000).toFixed(4);
   };
   
-  // Render cash out button z timerem
+  // Render cash out button with timer
   const renderCashOutButton = () => {
     if (!playerView?.player || !playerView.player.isAlive) return null;
     
@@ -381,11 +441,29 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
           left: '50%',
           transform: 'translate(-50%, -50%)',
           textAlign: 'center',
-          color: '#333'
+          color: '#333',
+          background: 'white',
+          padding: '40px',
+          borderRadius: '20px',
+          border: '4px solid #16A085',
+          boxShadow: '8px 8px 0 rgba(0, 0, 0, 0.1)'
         }}>
           <h2>{connectionStatus}</h2>
           <div className="spinner" style={{ margin: '20px auto' }}></div>
           <p>Waiting for game data...</p>
+          {error && (
+            <div style={{
+              marginTop: '20px',
+              padding: '15px',
+              background: '#FFEBEE',
+              border: '3px solid #E74C3C',
+              borderRadius: '12px',
+              color: '#C0392B',
+              fontWeight: 700
+            }}>
+              {error}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -482,7 +560,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         />
       )}
       
-      {/* Death screen - poprawione */}
+      {/* Death screen */}
       {isPlayerDead && (
         <div className="death-overlay">
           <div className="death-content">
@@ -495,10 +573,10 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
                 e.preventDefault();
                 e.stopPropagation();
                 console.log('Back to menu clicked');
-                // Wyczyść wszystko
+                // Clear everything
                 localStorage.removeItem('dotara_io_game_state');
                 localStorage.removeItem('dotara_io_pending_cashout');
-                // Użyj onLeaveGame jeśli działa, lub force redirect
+                // Use onLeaveGame if it works, or force redirect
                 try {
                   onLeaveGame();
                 } catch (error) {
