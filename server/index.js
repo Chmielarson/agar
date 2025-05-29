@@ -17,6 +17,7 @@ const fs = require('fs');
 const bs58 = require('bs58');
 const GameEngine = require('./game/GameEngine');
 const NetworkOptimizer = require('./game/NetworkOptimizer');
+const WebRTCSignaling = require('./webrtc/webrtcSignaling');
 
 dotenv.config();
 
@@ -45,6 +46,9 @@ const io = new Server(server, {
   pingInterval: 25000, // 25 sekund
   connectTimeout: 45000 // 45 sekund timeout na połączenie
 });
+
+// Inicjalizacja WebRTC Signaling
+const webrtcSignaling = new WebRTCSignaling(io);
 
 // Konfiguracja Solana
 const SOLANA_NETWORK = process.env.SOLANA_NETWORK || 'devnet';
@@ -250,7 +254,8 @@ console.log('Global game started with zone system:', {
   isRunning: globalGame.isRunning,
   mapSize: globalGame.mapSize,
   zones: globalGame.zones.length,
-  serverWalletConfigured: !!serverWallet
+  serverWalletConfigured: !!serverWallet,
+  webrtcEnabled: true
 });
 
 // Przechowywanie połączeń graczy
@@ -435,7 +440,7 @@ app.get('/api/admin/active-players', (req, res) => {
   });
 });
 
-// NOWY ENDPOINT: Network stats
+// ZAKTUALIZOWANY ENDPOINT: Network stats z WebRTC i Workers
 app.get('/api/admin/network-stats', (req, res) => {
   const stats = networkOptimizer.getStats();
   const gameStats = globalGame.getGameState();
@@ -447,6 +452,8 @@ app.get('/api/admin/network-stats', (req, res) => {
       food: gameStats.foodCount,
       totalSol: gameStats.totalSolDisplay
     },
+    webrtc: webrtcSignaling.getStats(),
+    workers: globalGame.workerPool ? globalGame.workerPool.getStats() : null,
     server: {
       memory: process.memoryUsage(),
       uptime: process.uptime()
@@ -456,7 +463,7 @@ app.get('/api/admin/network-stats', (req, res) => {
 
 // NOWY ENDPOINT: Toggle optimalizacji
 app.post('/api/admin/toggle-optimization', (req, res) => {
-  const { compression, adaptiveTickrate } = req.body;
+  const { compression, adaptiveTickrate, workers } = req.body;
   
   if (compression !== undefined) {
     networkOptimizer.compressionEnabled = compression;
@@ -466,9 +473,14 @@ app.post('/api/admin/toggle-optimization', (req, res) => {
     networkOptimizer.adaptiveTickrateEnabled = adaptiveTickrate;
   }
   
+  if (workers !== undefined) {
+    globalGame.toggleWorkers(workers);
+  }
+  
   res.json({
     compression: networkOptimizer.compressionEnabled,
-    adaptiveTickrate: networkOptimizer.adaptiveTickrateEnabled
+    adaptiveTickrate: networkOptimizer.adaptiveTickrateEnabled,
+    workers: globalGame.useWorkers
   });
 });
 
@@ -479,7 +491,8 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     gameActive: globalGame.isRunning,
     activePlayers: globalGame.players.size,
-    serverWallet: serverWallet ? serverWallet.publicKey.toString() : 'not configured'
+    serverWallet: serverWallet ? serverWallet.publicKey.toString() : 'not configured',
+    webrtcActive: true
   });
 });
 
@@ -840,7 +853,8 @@ setInterval(() => {
     totalSolInGame: stats.totalSolDisplay,
     foodCount: stats.foodCount,
     zones: stats.zoneStats,
-    serverWallet: serverWallet ? serverWallet.publicKey.toString() : 'not configured'
+    serverWallet: serverWallet ? serverWallet.publicKey.toString() : 'not configured',
+    webrtc: webrtcSignaling.getStats()
   });
 }, 60000);
 
@@ -852,5 +866,6 @@ server.listen(PORT, () => {
   console.log(`Program ID: ${PROGRAM_ID.toString()}`);
   console.log(`Server wallet: ${serverWallet ? serverWallet.publicKey.toString() : 'not configured'}`);
   console.log(`Aktualizacje blockchain: ${serverWallet ? 'WŁĄCZONE' : 'WYŁĄCZONE'}`);
+  console.log(`WebRTC Signaling: WŁĄCZONE`);
   console.log('Globalna gra jest aktywna z systemem stref!');
 });

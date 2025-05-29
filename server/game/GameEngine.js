@@ -38,8 +38,16 @@ class GameEngine {
     this.totalPlayersJoined = 0;
     this.totalPlayersCashedOut = 0;
     
+    // Nowe komponenty
+    this.workerPool = null;
+    this.useWorkers = true; // Można wyłączyć dla debugowania
+    this.balance = gameBalance; // Konfiguracja balansu
+    
     // Callback dla blockchain updates
     this.onPlayerEaten = null;
+    
+    // Callback dla WebRTC
+    this.onPlayerPositionUpdate = null;
     
     console.log(`Global game engine created with map size ${this.mapSize} (4 zones of ${this.zoneSize}x${this.zoneSize})`);
     
@@ -154,7 +162,7 @@ class GameEngine {
       
       // Sprawdź czy pozycja jest bezpieczna
       let isSafe = true;
-      const minSafeDistance = playerRadius * 4; // Minimalna bezpieczna odległość
+      const minSafeDistance = playerRadius * this.balance.combat.safeZoneMultiplier * 10;
       
       // Sprawdź odległość od innych graczy
       for (const otherPlayer of this.players.values()) {
@@ -164,12 +172,6 @@ class GameEngine {
         
         // Jeśli inny gracz jest za blisko
         if (distance < otherPlayer.radius + minSafeDistance) {
-          isSafe = false;
-          break;
-        }
-        
-        // Jeśli inny gracz jest większy i bardzo blisko
-        if (otherPlayer.radius > playerRadius * 1.5 && distance < otherPlayer.radius * 3) {
           isSafe = false;
           break;
         }
@@ -290,36 +292,49 @@ class GameEngine {
     }
   }
   
+  // Zmodyfikowana metoda updatePlayer dla Worker Threads
   updatePlayer(playerAddress, input) {
     const player = this.players.get(playerAddress);
     if (!player || !player.isAlive) return;
     
-    // Upewnij się, że współrzędne są liczbami
-    if (input.mouseX !== undefined && input.mouseY !== undefined) {
-      const mouseX = parseFloat(input.mouseX);
-      const mouseY = parseFloat(input.mouseY);
-      
-      if (!isNaN(mouseX) && !isNaN(mouseY)) {
-        player.setTarget(mouseX, mouseY);
+    // Jeśli używamy workerów, przekaż input do odpowiedniego workera
+    if (this.useWorkers && this.workerPool) {
+      this.workerPool.sendPlayerInput(playerAddress, input);
+    } else {
+      // Stara logika
+      if (input.mouseX !== undefined && input.mouseY !== undefined) {
+        const mouseX = parseFloat(input.mouseX);
+        const mouseY = parseFloat(input.mouseY);
+        
+        if (!isNaN(mouseX) && !isNaN(mouseY)) {
+          player.setTarget(mouseX, mouseY);
+        }
       }
     }
     
-    // Obsługa podziału (space) - NOWY SYSTEM
+    // Obsługa podziału i wyrzucania (nie w workerach)
     if (input.split && player.canSplit()) {
-      const newCells = player.split();
-      // Nowe kulki są już dodane do gracza
+      const zone = this.balance.getZoneConfig(player.currentZone);
+      const splitSpeed = this.balance.speed.splitBoostSpeed * zone.speedMultiplier;
+      
+      const newCells = player.split(splitSpeed);
+      // Broadcast przez WebRTC
+      if (this.onPlayerPositionUpdate) {
+        this.onPlayerPositionUpdate(playerAddress, {
+          type: 'split',
+          cells: player.cells.map(c => ({ id: c.id, x: c.x, y: c.y, radius: c.radius }))
+        });
+      }
     }
     
-    // Obsługa wyrzucania masy (W)
     if (input.eject && player.canEject()) {
       const ejectedCell = player.eject();
       if (ejectedCell) {
-        // Konwertuj na Food dla kompatybilności
         const food = new Food(ejectedCell.x, ejectedCell.y, ejectedCell.mass);
         food.velocityX = ejectedCell.velocityX;
         food.velocityY = ejectedCell.velocityY;
         food.zoneId = this.getZoneFromPosition(ejectedCell.x, ejectedCell.y);
-        food.ownerId = playerAddress; // Oznacz kto wyrzucił
+        food.ownerId = playerAddress;
         this.food.set(food.id, food);
       }
     }
@@ -349,30 +364,120 @@ class GameEngine {
     this.food.set(food.id, food);
   }
   
-  start() {
+  async start() {
     if (this.isRunning) return;
     
     this.isRunning = true;
     this.lastUpdate = Date.now();
     
-    // Główna pętla gry
-    this.gameLoop = setInterval(() => {
-      this.update();
-    }, 1000 / this.tickRate);
+    // Uruchom worker threads jeśli włączone
+    if (this.useWorkers) {
+      this.workerPool = new WorkerPoolManager(this);
+      await this.workerPool.start();
+      console.log('Worker threads started');
+    }
     
-    console.log('Global game engine started with zone system');
+    // Główna pętla gry (dla rzeczy nie obsługiwanych przez workery)
+    this.gameLoop = setInterval(() => {
+      if (!this.useWorkers) {
+        // Jeśli workery wyłączone, używaj starej logiki
+        this.update();
+      } else {
+        // Tylko aktualizuj rzeczy nie obsługiwane przez workery
+        this.updateNonPhysics();
+      }
+    }, 1000 / this.balance.performance.tickRate);
+    
+    console.log('Global game engine started with zone system and workers');
   }
   
   stop() {
     if (!this.isRunning) return;
     
     this.isRunning = false;
+    
     if (this.gameLoop) {
       clearInterval(this.gameLoop);
       this.gameLoop = null;
     }
     
+    if (this.workerPool) {
+      this.workerPool.stop();
+      this.workerPool = null;
+    }
+    
     console.log('Global game engine stopped');
+  }
+  
+  updateNonPhysics() {
+    // Aktualizuj tylko rzeczy nie związane z fizyką
+    this.spawnFood();
+    this.updateLeaderboard();
+    
+    // Cleanup martwych graczy
+    for (const [address, player] of this.players) {
+      if (!player.isAlive && Date.now() - player.deathTime > 5000) {
+        this.players.delete(address);
+      }
+    }
+  }
+  
+  // Nowa metoda wywoływana przez WorkerPoolManager
+  handlePlayerCollision(eaterId, eaterCellId, eatenId, eatenCellId) {
+    const eater = this.players.get(eaterId);
+    const eaten = this.players.get(eatenId);
+    
+    if (!eater || !eaten) return;
+    
+    const eaterCell = eater.cells.find(c => c.id === eaterCellId);
+    const eatenCell = eaten.cells.find(c => c.id === eatenCellId);
+    
+    if (!eaterCell || !eatenCell) return;
+    
+    // Zastosuj balans
+    if (this.balance.canEat(eaterCell.radius, eatenCell.radius)) {
+      // Oznacz graczy jako w walce
+      eater.enterCombat();
+      eaten.enterCombat();
+      
+      // Zjedz kulkę
+      eaterCell.mass += eatenCell.mass;
+      eaterCell.updateRadius();
+      
+      // Usuń zjedzoną kulkę
+      const idx = eaten.cells.indexOf(eatenCell);
+      if (idx > -1) {
+        eaten.cells.splice(idx, 1);
+      }
+      
+      // Jeśli gracz stracił wszystkie kulki
+      if (eaten.cells.length === 0) {
+        eaten.die();
+        
+        // Transfer SOL z bonusem
+        const baseValue = eaten.solValue;
+        const bonus = baseValue * this.balance.economy.killRewardBonus;
+        const totalValue = baseValue + bonus;
+        
+        eater.solValue += totalValue;
+        eater.totalSolEarned += totalValue;
+        eater.playersEaten++;
+        eater.updateColor();
+        
+        console.log(`Player ${eaterId} ate ${eatenId} and gained ${totalValue} lamports (including ${bonus} bonus)`);
+        
+        // Wywołaj callback blockchain
+        if (this.onPlayerEaten) {
+          this.onPlayerEaten(eaterId, eatenId, baseValue);
+        }
+        
+        // Konwertuj na jedzenie
+        this.convertPlayerToFood(eaten);
+        
+        // Oznacz do usunięcia
+        eaten.deathTime = Date.now();
+      }
+    }
   }
   
   update() {
@@ -854,7 +959,12 @@ class GameEngine {
       leaderboard: this.leaderboard,
       gameState: this.getGameState(),
       viewRadius: viewRadius,
-      viewBounds: viewBounds
+      viewBounds: viewBounds,
+      workers: this.workerPool ? this.workerPool.getStats() : null,
+      balance: {
+        tickRate: this.balance.performance.tickRate,
+        useWorkers: this.useWorkers
+      }
     };
   }
   
@@ -870,6 +980,65 @@ class GameEngine {
       playersEaten: player.playersEaten,
       totalEarned: player.totalSolEarned,
       finalZone: player.currentZone
+    };
+  }
+  
+  // Dodaj metodę do przełączania workerów
+  toggleWorkers(enabled) {
+    if (enabled && !this.useWorkers) {
+      this.useWorkers = true;
+      if (this.isRunning) {
+        this.workerPool = new WorkerPoolManager(this);
+        this.workerPool.start();
+      }
+    } else if (!enabled && this.useWorkers) {
+      this.useWorkers = false;
+      if (this.workerPool) {
+        this.workerPool.stop();
+        this.workerPool = null;
+      }
+    }
+  }
+  
+  // Metoda do otrzymywania aktualizacji pozycji z WebRTC
+  handleP2PPositionUpdate(playerAddress, positionData) {
+    const player = this.players.get(playerAddress);
+    if (!player || !player.isAlive) return;
+    
+    // Weryfikuj czy pozycja jest w rozsądnych granicach
+    const maxDelta = 500; // Max przesunięcie na update
+    
+    for (const cellData of positionData.cells) {
+      const cell = player.cells.find(c => c.id === cellData.id);
+      if (!cell) continue;
+      
+      const dx = cellData.x - cell.x;
+      const dy = cellData.y - cell.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      // Anty-cheat: sprawdź czy ruch jest możliwy
+      if (distance > maxDelta) {
+        console.warn(`Suspicious movement detected for player ${playerAddress}`);
+        continue;
+      }
+      
+      // Interpoluj pozycję zamiast teleportacji
+      const lerpFactor = 0.3;
+      cell.x += dx * lerpFactor;
+      cell.y += dy * lerpFactor;
+    }
+  }
+  
+  getStats() {
+    const baseStats = this.getGameState();
+    
+    return {
+      ...baseStats,
+      workers: this.workerPool ? this.workerPool.getStats() : null,
+      balance: {
+        tickRate: this.balance.performance.tickRate,
+        useWorkers: this.useWorkers
+      }
     };
   }
 }

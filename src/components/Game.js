@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import Canvas from './Canvas';
+import WebRTCManager from './WebRTCManager';
 import { cashOut } from '../utils/SolanaTransactions';
 import './Game.css';
 
@@ -20,6 +21,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
   const [deathReason, setDeathReason] = useState('');
   const [combatCooldown, setCombatCooldown] = useState(0);
   const [error, setError] = useState('');
+  const [webrtcManager, setWebrtcManager] = useState(null);
   
   const canvasRef = useRef(null);
   const inputRef = useRef({
@@ -30,6 +32,62 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
   });
   
   const joinTimeoutRef = useRef(null);
+  
+  // WebRTC Manager setup
+  useEffect(() => {
+    if (playerView?.player && socket && publicKey) {
+      console.log('Inicjalizacja WebRTC Manager dla strefy:', playerView.player.currentZone);
+      
+      const manager = new WebRTCManager(socket, publicKey.toString());
+      
+      // Callback dla aktualizacji pozycji od innych graczy
+      manager.onPlayerPositionUpdate = (address, position) => {
+        // Aktualizuj lokalnie pozycje innych graczy
+        // To pozwoli na płynniejszą grę przy wysokim opóźnieniu do serwera
+        console.log('P2P position update from:', address, position);
+      };
+      
+      // Callback dla akcji innych graczy
+      manager.onPlayerAction = (address, action) => {
+        console.log('P2P player action from:', address, action);
+      };
+      
+      setWebrtcManager(manager);
+      
+      // Dołącz do strefy P2P
+      manager.joinZone(playerView.player.currentZone);
+      
+      return () => {
+        console.log('Czyszczenie WebRTC Manager');
+        manager.destroy();
+        setWebrtcManager(null);
+      };
+    }
+  }, [playerView?.player?.currentZone, socket, publicKey]);
+  
+  // Wysyłaj pozycję przez WebRTC
+  useEffect(() => {
+    if (!webrtcManager || !playerView?.player || !isConnected) return;
+    
+    const broadcastPosition = () => {
+      if (playerView.player.cells && playerView.player.cells.length > 0) {
+        webrtcManager.broadcastPlayerPosition({
+          cells: playerView.player.cells.map(cell => ({
+            id: cell.id,
+            x: cell.x,
+            y: cell.y,
+            radius: cell.radius
+          })),
+          timestamp: Date.now()
+        });
+      }
+    };
+    
+    // Broadcast pozycji co 50ms przez P2P (20 FPS)
+    const interval = setInterval(broadcastPosition, 50);
+    
+    return () => clearInterval(interval);
+  }, [webrtcManager, playerView, isConnected]);
   
   // Timer dla combat cooldown
   useEffect(() => {
@@ -173,7 +231,8 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       }
       
       console.log('Otrzymano player_view - pozycja:', 
-        view.player ? `(${Math.floor(view.player.centerX)}, ${Math.floor(view.player.centerY)})` : 'brak'
+        view.player ? `(${Math.floor(view.player.centerX)}, ${Math.floor(view.player.centerY)})` : 'brak',
+        'Strefa:', view.player?.currentZone
       );
       
       // Wyczyść timeout
@@ -286,10 +345,21 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     if (!socket || !isConnected || !publicKey || isPlayerDead) return;
     
     const sendInput = () => {
+      const input = { ...inputRef.current };
+      
       socket.emit('player_input', {
         playerAddress: publicKey.toString(),
-        input: inputRef.current
+        input: input
       });
+      
+      // Broadcast akcje przez WebRTC jeśli są
+      if (webrtcManager && (input.split || input.eject)) {
+        webrtcManager.broadcastPlayerPosition({
+          type: 'action',
+          action: input.split ? 'split' : 'eject',
+          timestamp: Date.now()
+        });
+      }
       
       // Reset jednorazowych akcji
       inputRef.current.split = false;
@@ -299,7 +369,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     const interval = setInterval(sendInput, 33); // 30 FPS
     
     return () => clearInterval(interval);
-  }, [socket, isConnected, publicKey, isPlayerDead]);
+  }, [socket, isConnected, publicKey, isPlayerDead, webrtcManager]);
   
   // Obsługa myszy
   const handleMouseMove = useCallback((e) => {
@@ -557,6 +627,12 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
                 <div className="info-item" style={{ color: '#16A085', marginTop: '10px' }}>
                   <span>Możesz przejść do:</span>
                   <span className="value">Strefa {playerView.player.canAdvanceToZone}</span>
+                </div>
+              )}
+              {webrtcManager && (
+                <div className="info-item" style={{ fontSize: '12px', color: '#7F8C8D', marginTop: '10px' }}>
+                  <span>P2P:</span>
+                  <span className="value">{webrtcManager.peers.size} graczy</span>
                 </div>
               )}
             </div>
