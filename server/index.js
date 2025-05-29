@@ -513,81 +513,98 @@ io.on('connection', (socket) => {
   });
   
   // Game handlers
-  socket.on('join_game', ({ playerAddress, nickname, initialStake }) => {
-    console.log('Join game request:', { playerAddress, nickname, initialStake });
-    
-    // Sprawdź czy gracz już istnieje w grze
-    const existingPlayer = globalGame.players.get(playerAddress);
-    
-    if (existingPlayer) {
-      // Gracz już istnieje - sprawdź jego stan
-      if (!existingPlayer.isAlive) {
-        // Gracz nie żyje - usuń go całkowicie przed nową grą
-        globalGame.players.delete(playerAddress);
-        console.log(`Removing dead player ${playerAddress} before new game`);
-        
-        // Usuń stare mapowania jeśli istnieją
-        const oldSocketId = playerSockets.get(playerAddress);
-        if (oldSocketId) {
-          playerSockets.delete(playerAddress);
-          socketPlayers.delete(oldSocketId);
-        }
+socket.on('join_game', ({ playerAddress, nickname, initialStake }) => {
+  console.log('Join game request:', { playerAddress, nickname, initialStake });
+  
+  // Check if player already exists in game
+  const existingPlayer = globalGame.players.get(playerAddress);
+  
+  if (existingPlayer) {
+    // Player exists - check their state
+    if (!existingPlayer.isAlive) {
+      // Dead player - remove completely before new game
+      globalGame.players.delete(playerAddress);
+      console.log(`Removing dead player ${playerAddress} before new game`);
+      
+      // Remove old mappings if they exist
+      const oldSocketId = playerSockets.get(playerAddress);
+      if (oldSocketId) {
+        playerSockets.delete(playerAddress);
+        socketPlayers.delete(oldSocketId);
+      }
+    } else {
+      // Player is alive
+      if (initialStake > 0) {
+        // Trying to join with new stake while alive
+        console.log(`Player ${playerAddress} is already alive in game`);
+        socket.emit('error', {
+          message: 'You are already active in the game. Please cash out first.'
+        });
+        return;
       } else {
-        // Gracz żyje
-        if (initialStake > 0) {
-          // Próbuje dołączyć z nową stawką mimo że żyje
-          console.log(`Player ${playerAddress} is already alive in game`);
-          socket.emit('error', {
-            message: 'You are already active in the game. Please cash out first.'
-          });
-          return;
-        } else {
-          // Reconnect do istniejącej sesji
-          playerSockets.set(playerAddress, socket.id);
-          socketPlayers.set(socket.id, { playerAddress, nickname });
-          socket.join('game');
-          
-          console.log(`Player ${playerAddress} reconnected to existing game session`);
-          
-          socket.emit('joined_game', {
-            success: true,
-            player: existingPlayer.toJSON()
-          });
-          return;
+        // Reconnect to existing session
+        playerSockets.set(playerAddress, socket.id);
+        socketPlayers.set(socket.id, { playerAddress, nickname });
+        socket.join('game');
+        
+        console.log(`Player ${playerAddress} reconnected to existing game session`);
+        
+        socket.emit('joined_game', {
+          success: true,
+          player: existingPlayer.toJSON()
+        });
+        
+        // IMPORTANT: Immediately send the player view
+        const playerView = globalGame.getPlayerView(playerAddress);
+        if (playerView) {
+          socket.emit('player_view', playerView);
         }
+        
+        return;
       }
     }
-    
-    // Nowy gracz lub martwy gracz z nową stawką
-    if (initialStake === 0 && !existingPlayer) {
-      // Całkiem nowy gracz musi mieć stawkę
-      console.log(`New player ${playerAddress} trying to join without stake`);
-      socket.emit('error', {
-        message: 'You must provide a stake to join the game.'
-      });
-      return;
-    }
-    
-    playerSockets.set(playerAddress, socket.id);
-    socketPlayers.set(socket.id, { playerAddress, nickname });
-    socket.join('game');
-    
-    const player = globalGame.addPlayer(playerAddress, nickname, initialStake);
-    
-    if (!player) {
-      socket.emit('error', {
-        message: 'Failed to join game. Please try again.'
-      });
-      return;
-    }
-    
-    console.log(`Player ${playerAddress} (${nickname}) joined game with stake: ${initialStake}`);
-    
-    socket.emit('joined_game', {
-      success: true,
-      player: player.toJSON()
+  }
+  
+  // New player or dead player with new stake
+  if (initialStake === 0 && !existingPlayer) {
+    // Completely new player must have a stake
+    console.log(`New player ${playerAddress} trying to join without stake`);
+    socket.emit('error', {
+      message: 'You must provide a stake to join the game.'
     });
+    return;
+  }
+  
+  playerSockets.set(playerAddress, socket.id);
+  socketPlayers.set(socket.id, { playerAddress, nickname });
+  socket.join('game');
+  
+  const player = globalGame.addPlayer(playerAddress, nickname, initialStake);
+  
+  if (!player) {
+    socket.emit('error', {
+      message: 'Failed to join game. Please try again.'
+    });
+    return;
+  }
+  
+  console.log(`Player ${playerAddress} (${nickname}) joined game with stake: ${initialStake}`);
+  
+  socket.emit('joined_game', {
+    success: true,
+    player: player.toJSON()
   });
+  
+  // IMPORTANT: Immediately send the initial player view
+  // Don't wait for the broadcast loop
+  const playerView = globalGame.getPlayerView(playerAddress);
+  if (playerView) {
+    console.log('Sending initial player view to newly joined player');
+    socket.emit('player_view', playerView);
+  } else {
+    console.error('Failed to get player view for newly joined player');
+  }
+});
   
   socket.on('respawn', ({ playerAddress }) => {
     const player = globalGame.players.get(playerAddress);
