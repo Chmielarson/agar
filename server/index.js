@@ -237,10 +237,6 @@ async function forceCleanupPlayer(playerAddress) {
 const globalGame = new GameEngine();
 const networkOptimizer = new NetworkOptimizer();
 
-// WAŻNE: Wyłącz Worker Threads tymczasowo
-globalGame.useWorkers = false;
-console.log('Worker Threads disabled for debugging');
-
 // Ustaw callback dla aktualizacji blockchain
 globalGame.onPlayerEaten = async (eaterAddress, eatenAddress, eatenValue) => {
   console.log('Player eaten callback triggered - updating blockchain');
@@ -259,8 +255,7 @@ console.log('Global game started with zone system:', {
   mapSize: globalGame.mapSize,
   zones: globalGame.zones.length,
   serverWalletConfigured: !!serverWallet,
-  webrtcEnabled: true,
-  workersEnabled: globalGame.useWorkers
+  webrtcEnabled: true
 });
 
 // Przechowywanie połączeń graczy
@@ -685,7 +680,6 @@ io.on('connection', (socket) => {
   
   socket.on('player_input', (data) => {
     const { playerAddress, input } = data;
-    console.log('Received player input:', playerAddress, input); // DEBUG
     globalGame.updatePlayer(playerAddress, input);
   });
   
@@ -873,6 +867,5 @@ server.listen(PORT, () => {
   console.log(`Server wallet: ${serverWallet ? serverWallet.publicKey.toString() : 'not configured'}`);
   console.log(`Aktualizacje blockchain: ${serverWallet ? 'WŁĄCZONE' : 'WYŁĄCZONE'}`);
   console.log(`WebRTC Signaling: WŁĄCZONE`);
-  console.log(`Worker Threads: ${globalGame.useWorkers ? 'WŁĄCZONE' : 'WYŁĄCZONE'}`);
   console.log('Globalna gra jest aktywna z systemem stref!');
 });

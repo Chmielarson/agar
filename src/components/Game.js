@@ -28,8 +28,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     mouseX: 0,
     mouseY: 0,
     split: false,
-    eject: false,
-    initialized: false // Dodane pole initialized
+    eject: false
   });
   
   const joinTimeoutRef = useRef(null);
@@ -246,12 +245,10 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       setPlayerView(view);
       setConnectionStatus('W grze');
       
-      // POPRAWIONA inicjalizacja pozycji myszy
-      if (view.player && !inputRef.current.initialized) {
+      // Zainicjalizuj pozycję myszy
+      if (view.player && inputRef.current.mouseX === 0 && inputRef.current.mouseY === 0) {
         inputRef.current.mouseX = view.player.centerX;
         inputRef.current.mouseY = view.player.centerY;
-        inputRef.current.initialized = true;
-        console.log('Initialized mouse position:', inputRef.current.mouseX, inputRef.current.mouseY);
       }
     };
     
@@ -350,9 +347,6 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     const sendInput = () => {
       const input = { ...inputRef.current };
       
-      // DEBUG
-      console.log('Sending input:', input);
-      
       socket.emit('player_input', {
         playerAddress: publicKey.toString(),
         input: input
@@ -411,9 +405,6 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       
       inputRef.current.mouseX = worldX;
       inputRef.current.mouseY = worldY;
-      
-      // DEBUG
-      console.log('Mouse world position:', worldX, worldY);
     }
   }, [playerView, isPlayerDead]);
   
