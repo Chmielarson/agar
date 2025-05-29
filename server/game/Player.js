@@ -151,7 +151,6 @@ class Player {
   }
   
   setTarget(x, y) {
-    console.log(`Player ${this.address} target set to:`, x, y); // DEBUG
     this.targetX = x;
     this.targetY = y;
   }

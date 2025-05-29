@@ -230,10 +230,10 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         return;
       }
       
-// console.log('Otrzymano player_view - pozycja:', 
-  //   view.player ? `(${Math.floor(view.player.centerX)}, ${Math.floor(view.player.centerY)})` : 'brak',
-  //   'Strefa:', view.player?.currentZone
-  // );
+      console.log('Otrzymano player_view - pozycja:', 
+        view.player ? `(${Math.floor(view.player.centerX)}, ${Math.floor(view.player.centerY)})` : 'brak',
+        'Strefa:', view.player?.currentZone
+      );
       
       // Wyczyść timeout
       if (joinTimeoutRef.current) {
