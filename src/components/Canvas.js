@@ -121,15 +121,20 @@ const Canvas = forwardRef(({ playerView, onMouseMove }, ref) => {
       // Rysuj tło z siatką na całym widocznym obszarze
       if (gridPatternRef.current) {
         ctx.fillStyle = gridPatternRef.current;
-        // Oblicz obszar do pokrycia z marginesem
-        const viewportSize = Math.max(canvas.width, canvas.height) / zoomLevel;
-        const margin = viewportSize; // Duży margines dla pewności
+        // Oblicz widoczny obszar w jednostkach świata gry
+        const viewWidth = canvas.width / zoomLevel;
+        const viewHeight = canvas.height / zoomLevel;
         
+        // Punkt startowy - lewy górny róg widoku z dużym marginesem
+        const startX = cameraX - viewWidth;
+        const startY = cameraY - viewHeight;
+        
+        // Rysuj kratkę z podwójnym marginesem we wszystkich kierunkach
         ctx.fillRect(
-          cameraX - viewportSize - margin,
-          cameraY - viewportSize - margin,
-          viewportSize * 2 + margin * 2,
-          viewportSize * 2 + margin * 2
+          startX,
+          startY,
+          viewWidth * 3,  // 3x szerokość widoku (lewo, środek, prawo)
+          viewHeight * 3  // 3x wysokość widoku (góra, środek, dół)
         );
       }
       
