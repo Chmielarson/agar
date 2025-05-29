@@ -1,4 +1,4 @@
-// src/App.js
+// src/App.js - poprawka inicjalizacji socket
 import React, { useState, useEffect, useMemo } from 'react';
 import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
 import { WalletAdapterNetwork } from '@solana/wallet-adapter-base';
@@ -17,31 +17,38 @@ const network = WalletAdapterNetwork.Devnet;
 const endpoint = clusterApiUrl(network);
 const wallets = [new PhantomWalletAdapter()];
 
+// Przenieś socket poza komponent
+const GAME_SERVER_URL = import.meta.env.VITE_GAME_SERVER_URL || 'http://localhost:3001';
+const socket = io(GAME_SERVER_URL, {
+  reconnection: true,
+  reconnectionAttempts: 5,
+  reconnectionDelay: 1000,
+  transports: ['websocket'], // Użyj tylko WebSocket
+  autoConnect: true
+});
+
+// Debug logging
+socket.on('connect', () => {
+  console.log('Socket połączony:', socket.id);
+});
+
+socket.on('disconnect', (reason) => {
+  console.log('Socket rozłączony:', reason);
+});
+
+socket.on('connect_error', (error) => {
+  console.error('Błąd połączenia socket:', error.message);
+});
+
 function AppContent() {
   const wallet = useWallet();
   const { publicKey } = wallet;
   
-  const [currentView, setCurrentView] = useState('join'); // 'join', 'game', 'cashout'
+  const [currentView, setCurrentView] = useState('join');
   const [playerStake, setPlayerStake] = useState(0);
   const [playerNickname, setPlayerNickname] = useState('');
   const [pendingCashOut, setPendingCashOut] = useState(null);
   const [isCheckingCashOut, setIsCheckingCashOut] = useState(true);
-  
-  // Initialize socket.io - use useMemo to prevent reconnection on every render
-  const socket = useMemo(() => {
-    const GAME_SERVER_URL = import.meta.env.VITE_GAME_SERVER_URL || 'http://localhost:3001';
-    return io(GAME_SERVER_URL, {
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-    });
-  }, []);
-  
-  useEffect(() => {
-    return () => {
-      socket.disconnect();
-    };
-  }, [socket]);
   
   // Check for pending cash out on mount
   useEffect(() => {
@@ -53,11 +60,9 @@ function AppContent() {
           const data = JSON.parse(pendingCashOutData);
           
           if (data.playerAddress === publicKey.toString()) {
-            // Gracz ma oczekującą wypłatę
             setPendingCashOut(data);
             setCurrentView('cashout');
           } else {
-            // Inne konto - usuń stare dane
             localStorage.removeItem('dotara_io_pending_cashout');
           }
         } catch (error) {
@@ -108,7 +113,6 @@ function AppContent() {
   
   const handleLeaveGame = (hasPendingCashOut = false) => {
     if (hasPendingCashOut) {
-      // Pobierz dane z localStorage od razu przy przekierowaniu
       const pendingCashOutData = localStorage.getItem('dotara_io_pending_cashout');
       if (pendingCashOutData) {
         try {
@@ -136,7 +140,6 @@ function AppContent() {
     setPlayerNickname('');
   };
   
-  // Nie renderuj nic podczas sprawdzania
   if (isCheckingCashOut) {
     return (
       <div className="app">
@@ -148,7 +151,7 @@ function AppContent() {
           flexDirection: 'column'
         }}>
           <div className="spinner"></div>
-          <p style={{ marginTop: '20px', color: '#666' }}>Loading...</p>
+          <p style={{ marginTop: '20px', color: '#666' }}>Ładowanie...</p>
         </div>
       </div>
     );
@@ -165,7 +168,7 @@ function AppContent() {
             <WalletMultiButton />
             {publicKey && (
               <div className="wallet-info">
-                <span className="balance">Connected</span>
+                <span className="balance">Połączono</span>
               </div>
             )}
           </div>

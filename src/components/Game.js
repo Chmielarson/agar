@@ -16,7 +16,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
   const [isPlayerDead, setIsPlayerDead] = useState(false);
   const [isCashingOut, setIsCashingOut] = useState(false);
   const [showCashOutModal, setShowCashOutModal] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState('Connecting...');
+  const [connectionStatus, setConnectionStatus] = useState('Łączenie...');
   const [deathReason, setDeathReason] = useState('');
   const [combatCooldown, setCombatCooldown] = useState(0);
   const [error, setError] = useState('');
@@ -31,7 +31,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
   
   const joinTimeoutRef = useRef(null);
   
-  // Timer for combat cooldown
+  // Timer dla combat cooldown
   useEffect(() => {
     if (playerView?.player?.combatCooldownRemaining > 0) {
       setCombatCooldown(playerView.player.combatCooldownRemaining);
@@ -52,7 +52,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     }
   }, [playerView?.player?.combatCooldownRemaining]);
   
-  // Prevent page scrolling during game
+  // Zapobiegaj przewijaniu strony podczas gry
   useEffect(() => {
     const originalOverflow = document.body.style.overflow;
     const originalPosition = document.body.style.position;
@@ -74,69 +74,102 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
   // Connect to game
   useEffect(() => {
     if (!socket || !publicKey) {
-      console.log('Missing socket or publicKey:', { socket: !!socket, publicKey: !!publicKey });
+      console.log('Brak socket lub publicKey:', { socket: !!socket, publicKey: !!publicKey });
       return;
     }
     
-    console.log('Setting up game connection...');
-    setConnectionStatus('Joining game...');
+    console.log('Konfiguracja połączenia z grą...');
+    setConnectionStatus('Dołączanie do gry...');
+    
+    // Funkcja do dołączenia/ponownego dołączenia do gry
+    const joinGame = () => {
+      console.log('Wysyłanie join_game:', {
+        playerAddress: publicKey.toString(),
+        nickname,
+        initialStake,
+        socketId: socket.id,
+        connected: socket.connected
+      });
+      
+      if (!socket.connected) {
+        console.log('Socket nie jest połączony, czekam na połączenie...');
+        setConnectionStatus('Łączenie z serwerem...');
+        return;
+      }
+      
+      socket.emit('join_game', {
+        playerAddress: publicKey.toString(),
+        nickname: nickname || `Player ${publicKey.toString().substring(0, 6)}`,
+        initialStake: initialStake
+      });
+      
+      // Ustaw timeout dla otrzymania początkowego widoku
+      if (joinTimeoutRef.current) {
+        clearTimeout(joinTimeoutRef.current);
+      }
+      
+      joinTimeoutRef.current = setTimeout(() => {
+        if (!playerView) {
+          console.error('Timeout czekania na player view');
+          setConnectionStatus('Serwer nie odpowiada - spróbuj odświeżyć');
+          setError('Nie udało się otrzymać danych gry z serwera. Odśwież stronę i spróbuj ponownie.');
+        }
+      }, 10000); // 10 sekund timeout
+    };
     
     // Monitor connection state
-    socket.on('connect', () => {
-      console.log('Socket connected:', socket.id);
-    });
+    const handleConnect = () => {
+      console.log('Socket połączony:', socket.id);
+      setConnectionStatus('Połączono - dołączam do gry...');
+      // Automatycznie dołącz do gry po połączeniu
+      setTimeout(joinGame, 100); // Małe opóźnienie dla stabilności
+    };
     
-    socket.on('disconnect', () => {
-      console.log('Socket disconnected');
+    const handleDisconnect = (reason) => {
+      console.log('Socket rozłączony:', reason);
       setIsConnected(false);
-      setConnectionStatus('Disconnected from server');
-    });
-    
-    socket.on('connect_error', (error) => {
-      console.error('Socket connection error:', error);
-      setConnectionStatus('Connection error - retrying...');
-    });
-    
-    // Join game immediately
-    console.log('Emitting join_game:', {
-      playerAddress: publicKey.toString(),
-      nickname,
-      initialStake
-    });
-    
-    socket.emit('join_game', {
-      playerAddress: publicKey.toString(),
-      nickname: nickname || `Player ${publicKey.toString().substring(0, 6)}`,
-      initialStake: initialStake
-    });
-    
-    // Set a timeout for receiving the initial player view
-    joinTimeoutRef.current = setTimeout(() => {
-      if (!playerView && isConnected) {
-        console.error('Timeout waiting for player view');
-        setConnectionStatus('Server not responding - try refreshing');
-        setError('Failed to receive game data from server. Please refresh the page and try again.');
-        
-        // Try to force cleanup and leave
-        socket.disconnect();
-        onLeaveGame();
+      setConnectionStatus('Rozłączono z serwerem');
+      
+      if (reason === 'io server disconnect') {
+        // Serwer rozłączył klienta
+        setError('Zostałeś rozłączony przez serwer');
       }
-    }, 10000); // 10 second timeout
+    };
+    
+    const handleConnectError = (error) => {
+      console.error('Błąd połączenia socket:', error);
+      setConnectionStatus('Błąd połączenia - ponawiam...');
+      setError(`Błąd połączenia: ${error.message}`);
+    };
+    
+    // Rejestruj handlery połączenia
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('connect_error', handleConnectError);
+    
+    // Jeśli już połączony, dołącz od razu
+    if (socket.connected) {
+      console.log('Socket już połączony, dołączam do gry...');
+      joinGame();
+    } else {
+      console.log('Socket nie jest połączony, czekam na połączenie...');
+      setConnectionStatus('Łączenie z serwerem...');
+    }
     
     // Set up event listeners
     const handleJoinedGame = (data) => {
-      console.log('Received joined_game:', data);
+      console.log('Otrzymano joined_game:', data);
       if (data.success) {
         setIsConnected(true);
-        setConnectionStatus('Connected to game - waiting for view');
+        setConnectionStatus('Połączono z grą - czekam na widok');
       } else {
-        setConnectionStatus('Failed to join game');
-        setError(data.error || 'Unknown error');
+        setConnectionStatus('Nie udało się dołączyć do gry');
+        setError(data.error || 'Nieznany błąd');
       }
     };
     
     const handleGameState = (state) => {
-      console.log('Received game_state:', {
+      console.log('Otrzymano game_state:', {
         playerCount: state.playerCount,
         foodCount: state.foodCount,
         mapSize: state.mapSize,
@@ -147,11 +180,11 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     
     const handlePlayerView = (view) => {
       if (!view) {
-        console.error('Received null player view');
+        console.error('Otrzymano null player view');
         return;
       }
       
-      console.log('Received player_view:', {
+      console.log('Otrzymano player_view:', {
         hasPlayer: !!view.player,
         playerAlive: view.player?.isAlive,
         playerCells: view.player?.cells?.length || 0,
@@ -163,18 +196,18 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         timestamp: new Date().toISOString()
       });
       
-      // Clear timeout since we got the view
+      // Wyczyść timeout skoro dostaliśmy widok
       if (joinTimeoutRef.current) {
         clearTimeout(joinTimeoutRef.current);
         joinTimeoutRef.current = null;
       }
       
-      // Clear any error state when we get a valid view
+      // Wyczyść błędy gdy dostaniemy poprawny widok
       setError('');
       setPlayerView(view);
-      setConnectionStatus('In game');
+      setConnectionStatus('W grze');
       
-      // Initialize mouse position to player center position
+      // Zainicjalizuj pozycję myszy do środka gracza
       if (view.player && inputRef.current.mouseX === 0 && inputRef.current.mouseY === 0) {
         inputRef.current.mouseX = view.player.centerX;
         inputRef.current.mouseY = view.player.centerY;
@@ -182,27 +215,27 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     };
     
     const handlePlayerEliminated = (data) => {
-      console.log('Player eliminated:', data);
+      console.log('Gracz wyeliminowany:', data);
       if (data.playerAddress === publicKey.toString()) {
         setIsPlayerDead(true);
-        setDeathReason(data.reason || 'You were eaten by another player!');
-        setPlayerView(null); // Clear player view since they're out of the game
-        // Clear saved game state
+        setDeathReason(data.reason || 'Zostałeś zjedzony przez innego gracza!');
+        setPlayerView(null);
+        // Wyczyść zapisany stan gry
         localStorage.removeItem('dotara_io_game_state');
         localStorage.removeItem('dotara_io_pending_cashout');
       }
     };
     
     const handleCashOutResult = (result) => {
-      console.log('Cash out successful:', result);
+      console.log('Cash out zakończony pomyślnie:', result);
       onLeaveGame();
     };
     
     const handleError = (error) => {
-      console.error('Game error:', error);
-      setConnectionStatus(`Error: ${error.message || error}`);
+      console.error('Błąd gry:', error);
+      setConnectionStatus(`Błąd: ${error.message || error}`);
       setError(error.message || error);
-      // If error is about being dead, show death screen
+      // Jeśli błąd dotyczy bycia zjedzonym, pokaż ekran śmierci
       if (error.message && error.message.includes('eaten')) {
         setIsPlayerDead(true);
         setDeathReason(error.message);
@@ -210,7 +243,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       }
     };
     
-    // Register all event listeners
+    // Zarejestruj wszystkie event listenery
     socket.on('joined_game', handleJoinedGame);
     socket.on('game_state', handleGameState);
     socket.on('player_view', handlePlayerView);
@@ -218,9 +251,9 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     socket.on('cash_out_result', handleCashOutResult);
     socket.on('error', handleError);
     
-    // Clean up
+    // Cleanup
     return () => {
-      console.log('Cleaning up game connection');
+      console.log('Czyszczenie połączenia z grą');
       if (joinTimeoutRef.current) {
         clearTimeout(joinTimeoutRef.current);
       }
@@ -230,13 +263,13 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       socket.off('player_eliminated', handlePlayerEliminated);
       socket.off('cash_out_result', handleCashOutResult);
       socket.off('error', handleError);
-      socket.off('connect');
-      socket.off('disconnect');
-      socket.off('connect_error');
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('connect_error', handleConnectError);
     };
   }, [socket, publicKey, nickname, initialStake, onLeaveGame]);
   
-  // Clear join timeout when we get player view
+  // Wyczyść timeout gdy dostaniemy player view
   useEffect(() => {
     if (playerView && joinTimeoutRef.current) {
       clearTimeout(joinTimeoutRef.current);
@@ -244,7 +277,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     }
   }, [playerView]);
   
-  // Send player input
+  // Wysyłaj input gracza
   useEffect(() => {
     if (!socket || !isConnected || !publicKey || isPlayerDead) return;
     
@@ -254,7 +287,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         input: inputRef.current
       });
       
-      // Reset one-time actions
+      // Reset jednorazowych akcji
       inputRef.current.split = false;
       inputRef.current.eject = false;
     };
@@ -264,7 +297,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     return () => clearInterval(interval);
   }, [socket, isConnected, publicKey, isPlayerDead]);
   
-  // Mouse handling
+  // Obsługa myszy
   const handleMouseMove = useCallback((e) => {
     if (!canvasRef.current || isPlayerDead) return;
     
@@ -274,13 +307,13 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     
     setMousePosition({ x, y });
     
-    // Convert to game world coordinates
+    // Konwersja do współrzędnych świata gry
     if (playerView && playerView.player) {
       const canvas = canvasRef.current;
       const centerX = canvas.width / 2;
       const centerY = canvas.height / 2;
       
-      // Calculate zoom level based on view bounds
+      // Oblicz poziom zoom na podstawie granic widoku
       const screenSize = Math.min(canvas.width, canvas.height);
       const baseZoom = screenSize / 800;
       let zoomFactor = 1;
@@ -292,7 +325,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       
       const zoomLevel = baseZoom * zoomFactor;
       
-      // Calculate position in game world with zoom
+      // Oblicz pozycję w świecie gry z uwzględnieniem zoom
       const worldX = playerView.player.centerX + (x - centerX) / zoomLevel;
       const worldY = playerView.player.centerY + (y - centerY) / zoomLevel;
       
@@ -301,7 +334,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     }
   }, [playerView, isPlayerDead]);
   
-  // Keyboard handling
+  // Obsługa klawiatury
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (isPlayerDead) return;
@@ -323,18 +356,18 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isPlayerDead]);
   
-  // Handle cash out
+  // Obsługa cash out
   const handleCashOut = async () => {
     if (!playerView || !playerView.player || isCashingOut) return;
     
     if (playerView.player.solValue === 0) {
-      alert('You have no SOL to cash out!');
+      alert('Nie masz SOL do wypłaty!');
       return;
     }
     
-    // Check combat cooldown
+    // Sprawdź cooldown walki
     if (!playerView.player.canCashOut) {
-      console.log('Cannot cash out - in combat!');
+      console.log('Nie można wypłacić - w trakcie walki!');
       return;
     }
     
@@ -345,49 +378,49 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     try {
       setIsCashingOut(true);
       
-      // First remove player from game on server
+      // Najpierw usuń gracza z gry na serwerze
       socket.emit('initiate_cash_out', {
         playerAddress: publicKey.toString()
       });
       
-      // Wait for confirmation
+      // Czekaj na potwierdzenie
       socket.once('cash_out_initiated', async (data) => {
         if (data.success) {
-          // Save data to cash out in localStorage - use server value!
+          // Zapisz dane do wypłaty w localStorage - użyj wartości z serwera!
           const cashOutData = {
             playerAddress: publicKey.toString(),
-            amount: data.amount, // Server returns actual value
+            amount: data.amount, // Serwer zwraca aktualną wartość
             timestamp: Date.now()
           };
           
           localStorage.setItem('dotara_io_pending_cashout', JSON.stringify(cashOutData));
           
-          // Set data before redirect
+          // Ustaw dane przed przekierowaniem
           setPendingCashOut(cashOutData);
           
-          // Go to cash out view
-          onLeaveGame(true); // true = pending cash out
+          // Przejdź do widoku wypłaty
+          onLeaveGame(true); // true = oczekująca wypłata
         } else {
-          alert('Failed to initiate cash out. Please try again.');
+          alert('Nie udało się zainicjować wypłaty. Spróbuj ponownie.');
           setIsCashingOut(false);
         }
       });
       
     } catch (error) {
-      console.error('Error initiating cash out:', error);
-      alert(`Error: ${error.message}`);
+      console.error('Błąd podczas inicjowania wypłaty:', error);
+      alert(`Błąd: ${error.message}`);
       setIsCashingOut(false);
     } finally {
       setShowCashOutModal(false);
     }
   };
   
-  // Format SOL value
+  // Formatuj wartość SOL
   const formatSol = (lamports) => {
     return (lamports / 1000000000).toFixed(4);
   };
   
-  // Render cash out button with timer
+  // Renderuj przycisk cash out z timerem
   const renderCashOutButton = () => {
     if (!playerView?.player || !playerView.player.isAlive) return null;
     
@@ -395,7 +428,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     const cooldownRemaining = combatCooldown;
     
     if (!canCashOut && cooldownRemaining > 0) {
-      // Combat timer button
+      // Przycisk z timerem walki
       const progressWidth = (cooldownRemaining / 10) * 100;
       
       return (
@@ -408,7 +441,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         >
           <div className="timer-text">
             <span>⚔️</span>
-            <span>Combat {cooldownRemaining}s</span>
+            <span>Walka {cooldownRemaining}s</span>
           </div>
           <style jsx>{`
             .cash-out-btn.combat-timer::before {
@@ -419,19 +452,19 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       );
     }
     
-    // Normal cash out button
+    // Normalny przycisk cash out
     return (
       <button 
         className="cash-out-btn"
         onClick={handleCashOut}
         disabled={isCashingOut || !canCashOut}
       >
-        💰 Cash Out ({formatSol(playerView.player.solValue)} SOL)
+        💰 Wypłać ({formatSol(playerView.player.solValue)} SOL)
       </button>
     );
   };
   
-  // Show loading screen if no player view yet and not dead
+  // Pokaż ekran ładowania jeśli nie ma jeszcze player view i gracz nie jest martwy
   if (!playerView && !isPlayerDead) {
     return (
       <div className="game-container">
@@ -450,7 +483,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         }}>
           <h2>{connectionStatus}</h2>
           <div className="spinner" style={{ margin: '20px auto' }}></div>
-          <p>Waiting for game data...</p>
+          <p>Czekam na dane gry...</p>
           {error && (
             <div style={{
               marginTop: '20px',
@@ -471,12 +504,12 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
   
   return (
     <div className="game-container">
-      {/* Game UI - only show if player is alive */}
+      {/* UI gry - pokazuj tylko gdy gracz żyje */}
       {playerView && !isPlayerDead && (
         <div className="game-ui">
-          {/* TOP RIGHT - Leaderboard */}
+          {/* PRAWY GÓRNY RÓG - Ranking */}
           <div className="leaderboard">
-            <h3>Leaderboard</h3>
+            <h3>Ranking</h3>
             {gameState?.leaderboard?.map((player, index) => (
               <div key={player.address} className="leaderboard-item">
                 <span className="rank">{player.rank}.</span>
@@ -486,72 +519,72 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
                          player.zone === 2 ? '#C0C0C0' : 
                          player.zone === 3 ? '#FFD700' : '#B9F2FF' 
                 }}>
-                  Z{player.zone}
+                  S{player.zone}
                 </span>
                 <span className="sol">{player.solDisplay} SOL</span>
               </div>
             ))}
           </div>
           
-          {/* TOP LEFT - Game stats + Player info */}
+          {/* LEWY GÓRNY RÓG - Statystyki gry + Info o graczu */}
           {gameState && playerView?.player && (
             <div className="game-info">
               <div className="info-item">
-                <span>Your Cells:</span>
+                <span>Twoje kulki:</span>
                 <span className="value">{playerView.player.cells?.length || 1}/{4}</span>
               </div>
               <div className="info-item">
-                <span>Total Mass:</span>
+                <span>Całkowita masa:</span>
                 <span className="value">{Math.floor(playerView.player.totalMass || playerView.player.mass)}</span>
               </div>
               <div className="info-item">
-                <span>Players Eaten:</span>
+                <span>Zjedzeni gracze:</span>
                 <span className="value">{playerView.player.playersEaten || 0}</span>
               </div>
               <div className="info-item" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '2px solid #ECF0F1' }}>
-                <span>Active Players:</span>
+                <span>Aktywni gracze:</span>
                 <span className="value">{gameState.playerCount}</span>
               </div>
               <div className="info-item">
-                <span>Total SOL:</span>
+                <span>Całkowity SOL:</span>
                 <span className="value">{gameState.totalSolDisplay} SOL</span>
               </div>
               {playerView.player.canAdvanceToZone && (
                 <div className="info-item" style={{ color: '#16A085', marginTop: '10px' }}>
-                  <span>Can advance to:</span>
-                  <span className="value">Zone {playerView.player.canAdvanceToZone}</span>
+                  <span>Możesz przejść do:</span>
+                  <span className="value">Strefa {playerView.player.canAdvanceToZone}</span>
                 </div>
               )}
             </div>
           )}
           
-          {/* BOTTOM LEFT - Controls */}
+          {/* LEWY DOLNY RÓG - Sterowanie */}
           <div className="controls">
             <div className="control-item">
-              <kbd>Mouse</kbd> - Move
+              <kbd>Mysz</kbd> - Ruch
             </div>
             <div className="control-item">
-              <kbd>Space</kbd> - Split (max 4 cells)
+              <kbd>Spacja</kbd> - Podział (max 4 kulki)
             </div>
             <div className="control-item">
-              <kbd>W</kbd> - Eject mass
+              <kbd>W</kbd> - Wyrzuć masę
             </div>
             <div className="control-item" style={{ marginTop: '10px', fontSize: '12px', color: '#7F8C8D' }}>
-              Cells merge after ~30s
+              Kulki łączą się po ~30s
             </div>
           </div>
           
-          {/* BOTTOM CENTER - Action buttons */}
+          {/* ŚRODEK DÓŁ - Przyciski akcji */}
           <div className="action-buttons">
             {renderCashOutButton()}
             <button className="exit-btn" onClick={onLeaveGame}>
-              Leave Game
+              Opuść grę
             </button>
           </div>
         </div>
       )}
       
-      {/* Game canvas - only show if player is alive */}
+      {/* Canvas gry - pokazuj tylko gdy gracz żyje */}
       {playerView && !isPlayerDead && (
         <Canvas
           ref={canvasRef}
@@ -560,58 +593,58 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         />
       )}
       
-      {/* Death screen */}
+      {/* Ekran śmierci */}
       {isPlayerDead && (
         <div className="death-overlay">
           <div className="death-content">
-            <h1>Game Over!</h1>
+            <h1>Koniec gry!</h1>
             <p className="death-reason">{deathReason}</p>
-            <p>You lost all your SOL!</p>
+            <p>Straciłeś cały swój SOL!</p>
             <button 
               className="leave-btn" 
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                console.log('Back to menu clicked');
-                // Clear everything
+                console.log('Powrót do menu');
+                // Wyczyść wszystko
                 localStorage.removeItem('dotara_io_game_state');
                 localStorage.removeItem('dotara_io_pending_cashout');
-                // Use onLeaveGame if it works, or force redirect
+                // Użyj onLeaveGame lub wymuś przekierowanie
                 try {
                   onLeaveGame();
                 } catch (error) {
-                  console.error('Error leaving game:', error);
+                  console.error('Błąd opuszczania gry:', error);
                   window.location.href = '/';
                 }
               }}
             >
-              Back to Menu
+              Powrót do menu
             </button>
           </div>
         </div>
       )}
       
-      {/* Cash out modal */}
+      {/* Modal wypłaty */}
       {showCashOutModal && playerView?.player && (
         <div className="modal-overlay">
           <div className="modal-content">
-            <h2>Confirm Cash Out</h2>
+            <h2>Potwierdź wypłatę</h2>
             <div className="cash-out-info">
               <div className="info-row">
-                <span>Current Value:</span>
+                <span>Aktualna wartość:</span>
                 <span>{formatSol(playerView.player.solValue)} SOL</span>
               </div>
               <div className="info-row">
-                <span>Platform Fee (5%):</span>
+                <span>Prowizja platformy (5%):</span>
                 <span>{formatSol(playerView.player.solValue * 0.05)} SOL</span>
               </div>
               <div className="info-row highlight">
-                <span>You'll Receive:</span>
+                <span>Otrzymasz:</span>
                 <span>{formatSol(playerView.player.solValue * 0.95)} SOL</span>
               </div>
             </div>
             <p className="warning">
-              Are you sure you want to cash out and leave the game?
+              Czy na pewno chcesz wypłacić i opuścić grę?
             </p>
             <div className="modal-buttons">
               <button 
@@ -619,14 +652,14 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
                 onClick={() => setShowCashOutModal(false)}
                 disabled={isCashingOut}
               >
-                Cancel
+                Anuluj
               </button>
               <button 
                 className="confirm-btn"
                 onClick={confirmCashOut}
                 disabled={isCashingOut}
               >
-                {isCashingOut ? 'Processing...' : 'Confirm Cash Out'}
+                {isCashingOut ? 'Przetwarzanie...' : 'Potwierdź wypłatę'}
               </button>
             </div>
           </div>

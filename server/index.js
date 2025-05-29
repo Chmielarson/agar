@@ -16,7 +16,7 @@ const {
 const fs = require('fs');
 const bs58 = require('bs58');
 const GameEngine = require('./game/GameEngine');
-const NetworkOptimizer = require('./game/NetworkOptimizer'); // NOWY IMPORT
+const NetworkOptimizer = require('./game/NetworkOptimizer');
 
 dotenv.config();
 
@@ -31,14 +31,19 @@ app.use((req, res, next) => {
 });
 
 const server = http.createServer(app);
+
+// POPRAWIONA KONFIGURACJA SOCKET.IO
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: '*', // W produkcji zmień na konkretną domenę
     methods: ['GET', 'POST'],
     credentials: true
   },
   transports: ['websocket', 'polling'],
-  allowEIO3: true
+  allowEIO3: true,
+  pingTimeout: 60000, // 60 sekund
+  pingInterval: 25000, // 25 sekund
+  connectTimeout: 45000 // 45 sekund timeout na połączenie
 });
 
 // Konfiguracja Solana
@@ -226,9 +231,9 @@ async function forceCleanupPlayer(playerAddress) {
 
 // Pojedyncza globalna instancja gry
 const globalGame = new GameEngine();
-const networkOptimizer = new NetworkOptimizer(); // NOWA INSTANCJA
+const networkOptimizer = new NetworkOptimizer();
 
-// Ustaw callback dla aktualizacji blockchain - TERAZ BĘDZIE DZIAŁAĆ!
+// Ustaw callback dla aktualizacji blockchain
 globalGame.onPlayerEaten = async (eaterAddress, eatenAddress, eatenValue) => {
   console.log('Player eaten callback triggered - updating blockchain');
   const signature = await updatePlayerValueOnChain(eaterAddress, eatenAddress, eatenValue);
@@ -416,7 +421,7 @@ app.get('/api/admin/active-players', (req, res) => {
     solDisplay: (p.solValue / 1000000000).toFixed(4),
     isAlive: p.isAlive,
     mass: Math.floor(p.mass),
-    cells: p.cells.length, // NOWA INFORMACJA
+    cells: p.cells.length,
     position: `${Math.floor(p.x)}, ${Math.floor(p.y)}`,
     currentZone: p.currentZone,
     zoneName: globalGame.zones[p.currentZone - 1].name
@@ -480,11 +485,49 @@ app.get('/health', (req, res) => {
 
 // Socket.IO handlers
 io.on('connection', (socket) => {
-  console.log('New client connected:', socket.id);
+  console.log('Nowe połączenie socket:', {
+    id: socket.id,
+    address: socket.handshake.address,
+    time: new Date().toISOString()
+  });
+  
+  socket.on('error', (error) => {
+    console.error('Socket error:', socket.id, error);
+  });
+  
+  socket.on('disconnect', (reason) => {
+    console.log('Socket rozłączony:', {
+      id: socket.id,
+      reason: reason,
+      time: new Date().toISOString()
+    });
+    
+    const playerInfo = socketPlayers.get(socket.id);
+    if (playerInfo) {
+      const { playerAddress } = playerInfo;
+      
+      // Sprawdź czy gracz istnieje i żyje
+      const player = globalGame.players.get(playerAddress);
+      if (player && player.isAlive) {
+        // Gracz żyje - zachowaj go w grze
+        console.log(`Gracz ${playerAddress} rozłączony ale pozostaje w grze`);
+      } else {
+        // Gracz nie istnieje lub nie żyje - wyczyść wszystko
+        console.log(`Czyszczenie rozłączonego gracza ${playerAddress}`);
+        if (player && !player.isAlive) {
+          globalGame.players.delete(playerAddress);
+        }
+      }
+      
+      // Zawsze usuń mapowania socketów przy disconnect
+      playerSockets.delete(playerAddress);
+      socketPlayers.delete(socket.id);
+    }
+  });
   
   // Chat handlers
   socket.on('join_lobby', ({ playerAddress }) => {
-    console.log(`Player ${playerAddress} joined lobby`);
+    console.log(`Gracz ${playerAddress} dołączył do lobby`);
     socket.join('lobby');
     socket.emit('chat_history', chatMessages);
   });
@@ -512,99 +555,105 @@ io.on('connection', (socket) => {
     io.to('lobby').emit('new_chat_message', chatMessage);
   });
   
-  // Game handlers
-socket.on('join_game', ({ playerAddress, nickname, initialStake }) => {
-  console.log('Join game request:', { playerAddress, nickname, initialStake });
-  
-  // Check if player already exists in game
-  const existingPlayer = globalGame.players.get(playerAddress);
-  
-  if (existingPlayer) {
-    // Player exists - check their state
-    if (!existingPlayer.isAlive) {
-      // Dead player - remove completely before new game
-      globalGame.players.delete(playerAddress);
-      console.log(`Removing dead player ${playerAddress} before new game`);
-      
-      // Remove old mappings if they exist
-      const oldSocketId = playerSockets.get(playerAddress);
-      if (oldSocketId) {
-        playerSockets.delete(playerAddress);
-        socketPlayers.delete(oldSocketId);
-      }
-    } else {
-      // Player is alive
-      if (initialStake > 0) {
-        // Trying to join with new stake while alive
-        console.log(`Player ${playerAddress} is already alive in game`);
-        socket.emit('error', {
-          message: 'You are already active in the game. Please cash out first.'
-        });
-        return;
-      } else {
-        // Reconnect to existing session
-        playerSockets.set(playerAddress, socket.id);
-        socketPlayers.set(socket.id, { playerAddress, nickname });
-        socket.join('game');
+  // POPRAWIONY HANDLER JOIN_GAME
+  socket.on('join_game', ({ playerAddress, nickname, initialStake }) => {
+    console.log('Żądanie dołączenia do gry:', { 
+      playerAddress, 
+      nickname, 
+      initialStake,
+      socketId: socket.id 
+    });
+    
+    // Sprawdź czy gracz już istnieje w grze
+    const existingPlayer = globalGame.players.get(playerAddress);
+    
+    if (existingPlayer) {
+      // Gracz istnieje - sprawdź jego stan
+      if (!existingPlayer.isAlive) {
+        // Martwy gracz - usuń go całkowicie przed nową grą
+        globalGame.players.delete(playerAddress);
+        console.log(`Usuwanie martwego gracza ${playerAddress} przed nową grą`);
         
-        console.log(`Player ${playerAddress} reconnected to existing game session`);
-        
-        socket.emit('joined_game', {
-          success: true,
-          player: existingPlayer.toJSON()
-        });
-        
-        // IMPORTANT: Immediately send the player view
-        const playerView = globalGame.getPlayerView(playerAddress);
-        if (playerView) {
-          socket.emit('player_view', playerView);
+        // Usuń stare mapowania jeśli istnieją
+        const oldSocketId = playerSockets.get(playerAddress);
+        if (oldSocketId) {
+          playerSockets.delete(playerAddress);
+          socketPlayers.delete(oldSocketId);
         }
-        
-        return;
+      } else {
+        // Gracz żyje
+        if (initialStake > 0) {
+          // Próbuje dołączyć z nową stawką mimo że żyje
+          console.log(`Gracz ${playerAddress} jest już aktywny w grze`);
+          socket.emit('error', {
+            message: 'Jesteś już aktywny w grze. Wypłać najpierw swoje środki.'
+          });
+          return;
+        } else {
+          // Reconnect do istniejącej sesji
+          playerSockets.set(playerAddress, socket.id);
+          socketPlayers.set(socket.id, { playerAddress, nickname });
+          socket.join('game');
+          
+          console.log(`Gracz ${playerAddress} ponownie połączony do istniejącej sesji`);
+          
+          socket.emit('joined_game', {
+            success: true,
+            player: existingPlayer.toJSON()
+          });
+          
+          // WAŻNE: Natychmiast wyślij widok gracza
+          const playerView = globalGame.getPlayerView(playerAddress);
+          if (playerView) {
+            console.log('Wysyłanie początkowego widoku do ponownie połączonego gracza');
+            socket.emit('player_view', playerView);
+          }
+          
+          return;
+        }
       }
     }
-  }
-  
-  // New player or dead player with new stake
-  if (initialStake === 0 && !existingPlayer) {
-    // Completely new player must have a stake
-    console.log(`New player ${playerAddress} trying to join without stake`);
-    socket.emit('error', {
-      message: 'You must provide a stake to join the game.'
+    
+    // Nowy gracz lub martwy gracz z nową stawką
+    if (initialStake === 0 && !existingPlayer) {
+      // Całkiem nowy gracz musi mieć stawkę
+      console.log(`Nowy gracz ${playerAddress} próbuje dołączyć bez stawki`);
+      socket.emit('error', {
+        message: 'Musisz wnieść stawkę aby dołączyć do gry.'
+      });
+      return;
+    }
+    
+    playerSockets.set(playerAddress, socket.id);
+    socketPlayers.set(socket.id, { playerAddress, nickname });
+    socket.join('game');
+    
+    const player = globalGame.addPlayer(playerAddress, nickname, initialStake);
+    
+    if (!player) {
+      socket.emit('error', {
+        message: 'Nie udało się dołączyć do gry. Spróbuj ponownie.'
+      });
+      return;
+    }
+    
+    console.log(`Gracz ${playerAddress} (${nickname}) dołączył do gry ze stawką: ${initialStake}`);
+    
+    socket.emit('joined_game', {
+      success: true,
+      player: player.toJSON()
     });
-    return;
-  }
-  
-  playerSockets.set(playerAddress, socket.id);
-  socketPlayers.set(socket.id, { playerAddress, nickname });
-  socket.join('game');
-  
-  const player = globalGame.addPlayer(playerAddress, nickname, initialStake);
-  
-  if (!player) {
-    socket.emit('error', {
-      message: 'Failed to join game. Please try again.'
-    });
-    return;
-  }
-  
-  console.log(`Player ${playerAddress} (${nickname}) joined game with stake: ${initialStake}`);
-  
-  socket.emit('joined_game', {
-    success: true,
-    player: player.toJSON()
+    
+    // WAŻNE: Natychmiast wyślij początkowy widok gracza
+    // Nie czekaj na pętlę broadcastowania
+    const playerView = globalGame.getPlayerView(playerAddress);
+    if (playerView) {
+      console.log('Wysyłanie początkowego widoku do nowo dołączonego gracza');
+      socket.emit('player_view', playerView);
+    } else {
+      console.error('Nie udało się uzyskać widoku dla nowo dołączonego gracza');
+    }
   });
-  
-  // IMPORTANT: Immediately send the initial player view
-  // Don't wait for the broadcast loop
-  const playerView = globalGame.getPlayerView(playerAddress);
-  if (playerView) {
-    console.log('Sending initial player view to newly joined player');
-    socket.emit('player_view', playerView);
-  } else {
-    console.error('Failed to get player view for newly joined player');
-  }
-});
   
   socket.on('respawn', ({ playerAddress }) => {
     const player = globalGame.players.get(playerAddress);
@@ -613,7 +662,7 @@ socket.on('join_game', ({ playerAddress, nickname, initialStake }) => {
     // Respawn gracza
     globalGame.addPlayer(playerAddress, player.nickname, 0); // Respawn bez dodatkowej stawki
     
-    console.log(`Player ${playerAddress} respawned`);
+    console.log(`Gracz ${playerAddress} odrodzony`);
   });
   
   socket.on('player_input', (data) => {
@@ -622,29 +671,29 @@ socket.on('join_game', ({ playerAddress, nickname, initialStake }) => {
   });
   
   socket.on('initiate_cash_out', ({ playerAddress }) => {
-    console.log('Player initiating cash out:', playerAddress);
+    console.log('Gracz inicjuje wypłatę:', playerAddress);
     
     const player = globalGame.players.get(playerAddress);
     if (!player || !player.isAlive) {
       socket.emit('cash_out_initiated', {
         success: false,
-        error: 'Player not found or already dead'
+        error: 'Gracz nie znaleziony lub już martwy'
       });
       return;
     }
     
-    // Oznacz gracza jako "cashing out" - to zapobiegnie zjedzeniu
+    // Oznacz gracza jako "wypłacającego" - to zapobiegnie zjedzeniu
     player.isCashingOut = true;
     
     // WAŻNE: Zapisz AKTUALNĄ wartość gracza (po zjedzeniu innych)
     const cashOutAmount = player.solValue;
     const cashOutAmountSol = cashOutAmount / 1000000000;
     
-    console.log(`Player ${playerAddress} cashing out with:`);
-    console.log(`- Current value: ${cashOutAmount} lamports (${cashOutAmountSol} SOL)`);
-    console.log(`- Initial stake: ${player.initialStake} lamports`);
-    console.log(`- Players eaten: ${player.playersEaten}`);
-    console.log(`- Total earned: ${player.totalSolEarned} lamports`);
+    console.log(`Gracz ${playerAddress} wypłaca:`);
+    console.log(`- Aktualna wartość: ${cashOutAmount} lamports (${cashOutAmountSol} SOL)`);
+    console.log(`- Początkowa stawka: ${player.initialStake} lamports`);
+    console.log(`- Zjedzeni gracze: ${player.playersEaten}`);
+    console.log(`- Całkowite zarobki: ${player.totalSolEarned} lamports`);
     
     // Usuń gracza z gry (ale zachowaj wartość)
     const removedPlayer = globalGame.removePlayer(playerAddress, true);
@@ -668,7 +717,7 @@ socket.on('join_game', ({ playerAddress, nickname, initialStake }) => {
   
   socket.on('cash_out', ({ playerAddress }) => {
     // To jest teraz tylko do potwierdzenia - gracz już został usunięty
-    console.log('Cash out confirmed for:', playerAddress);
+    console.log('Wypłata potwierdzona dla:', playerAddress);
     
     const result = {
       address: playerAddress,
@@ -677,36 +726,7 @@ socket.on('join_game', ({ playerAddress, nickname, initialStake }) => {
     
     socket.emit('cash_out_result', result);
   });
-  
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
-    
-    const playerInfo = socketPlayers.get(socket.id);
-    if (playerInfo) {
-      const { playerAddress } = playerInfo;
-      
-      // Sprawdź czy gracz istnieje i żyje
-      const player = globalGame.players.get(playerAddress);
-      if (player && player.isAlive) {
-        // Gracz żyje - zachowaj go w grze
-        console.log(`Player ${playerAddress} disconnected but remains in game`);
-      } else {
-        // Gracz nie istnieje lub nie żyje - wyczyść wszystko
-        console.log(`Cleaning up disconnected player ${playerAddress}`);
-        if (player && !player.isAlive) {
-          globalGame.players.delete(playerAddress);
-        }
-      }
-      
-      // Zawsze usuń mapowania socketów przy disconnect
-      playerSockets.delete(playerAddress);
-      socketPlayers.delete(socket.id);
-    }
-  });
 });
-
-// ZMIENIONA funkcja broadcastująca stan gry z optymalizacjami
-// Update the broadcastGameState function in server/index.js around line 648
 
 // ZMIENIONA funkcja broadcastująca stan gry z optymalizacjami
 function broadcastGameState() {
@@ -729,11 +749,11 @@ function broadcastGameState() {
       const player = globalGame.players.get(playerAddress);
       
       if (!player) {
-        console.log(`Player ${playerAddress} has no view and no player object - removing socket`);
+        console.log(`Gracz ${playerAddress} nie ma widoku i obiektu gracza - usuwam socket`);
         // Wyślij event eliminacji
         io.to(socketId).emit('player_eliminated', {
           playerAddress,
-          reason: 'You were eaten by another player!'
+          reason: 'Zostałeś zjedzony przez innego gracza!'
         });
         // Usuń mapowania
         playerSockets.delete(playerAddress);
@@ -743,17 +763,17 @@ function broadcastGameState() {
           socketPlayers.delete(socketId);
         }
         
-        console.log(`Removed socket mappings for eaten player ${playerAddress}`);
+        console.log(`Usunięto mapowania socket dla zjedzonego gracza ${playerAddress}`);
       } else if (!player.isAlive) {
-        console.log(`Player ${playerAddress} is dead but still in players map`);
+        console.log(`Gracz ${playerAddress} jest martwy ale wciąż w mapie graczy`);
       }
       continue;
     }
     
-    // Check if socket is still connected
+    // Sprawdź czy socket jest wciąż połączony
     const connectedSocket = io.sockets.sockets.get(socketId);
     if (!connectedSocket) {
-      console.log(`Socket ${socketId} for player ${playerAddress} is not connected - removing`);
+      console.log(`Socket ${socketId} dla gracza ${playerAddress} nie jest połączony - usuwam`);
       playerSockets.delete(playerAddress);
       socketPlayers.delete(socketId);
       continue;
@@ -798,7 +818,7 @@ function broadcastGameState() {
   // Log co 5 sekund - ale tylko jeśli są gracze
   if (Date.now() % 5000 < 16 && broadcastCount > 0) {
     const stats = networkOptimizer.getStats();
-    console.log(`Broadcasting to ${broadcastCount} players (${successCount} successful), optimizer stats:`, {
+    console.log(`Nadawanie do ${broadcastCount} graczy (${successCount} pomyślnych), statystyki optymalizatora:`, {
       ...stats,
       activePlayers: gameState.playerCount,
       foodCount: gameState.foodCount,
@@ -814,7 +834,7 @@ setInterval(broadcastGameState, 16);
 // Statystyki gry co minutę
 setInterval(() => {
   const stats = globalGame.getGameState();
-  console.log('Game statistics:', {
+  console.log('Statystyki gry:', {
     activePlayers: stats.playerCount,
     totalPlayers: stats.totalPlayers,
     totalSolInGame: stats.totalSolDisplay,
@@ -827,10 +847,10 @@ setInterval(() => {
 // Start server
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`Solana.io Global Game Server running on port ${PORT}`);
-  console.log(`Connected to Solana ${SOLANA_NETWORK}`);
+  console.log(`Solana.io Global Game Server uruchomiony na porcie ${PORT}`);
+  console.log(`Połączony z Solana ${SOLANA_NETWORK}`);
   console.log(`Program ID: ${PROGRAM_ID.toString()}`);
   console.log(`Server wallet: ${serverWallet ? serverWallet.publicKey.toString() : 'not configured'}`);
-  console.log(`Blockchain updates: ${serverWallet ? 'ENABLED' : 'DISABLED'}`);
-  console.log('Global game is active with zone system!');
+  console.log(`Aktualizacje blockchain: ${serverWallet ? 'WŁĄCZONE' : 'WYŁĄCZONE'}`);
+  console.log('Globalna gra jest aktywna z systemem stref!');
 });
