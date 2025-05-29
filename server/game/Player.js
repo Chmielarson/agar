@@ -84,7 +84,7 @@ class Player {
     );
   }
   
-  // NOWA METODA - Oblicz promień gracza
+  // METODA calculateRadius - DODANA!
   calculateRadius() {
     const biggest = this.getBiggestCell();
     if (biggest) {
