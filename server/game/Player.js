@@ -1,4 +1,4 @@
-// server/game/Player.js
+// Pełna zaktualizowana klasa Player:
 const Cell = require('./Cell');
 
 class Player {
@@ -27,7 +27,7 @@ class Player {
     this.currentZone = 1; // Domyślnie strefa 1
     this.canAdvanceToZone = null; // Czy może awansować do wyższej strefy
     
-    // Cel ruchu (dla wszystkich kulek) - INICJALIZUJ NA POZYCJI STARTOWEJ
+    // Cel ruchu (dla wszystkich kulek)
     this.targetX = x;
     this.targetY = y;
     
@@ -48,7 +48,7 @@ class Player {
     // Cash out status
     this.isCashingOut = false;
     
-    console.log(`Player created: ${nickname} (${address}) at (${x}, ${y}) with stake: ${initialStake} lamports (${stakeSol} SOL), starting mass: ${initialMass}`);
+    console.log(`Player created: ${nickname} (${address}) with stake: ${initialStake} lamports (${stakeSol} SOL), starting mass: ${initialMass}`);
   }
   
   // Pobierz całkowitą masę gracza
@@ -84,7 +84,7 @@ class Player {
     );
   }
   
-  // METODA calculateRadius - DODANA!
+  // NOWA METODA - Oblicz promień gracza
   calculateRadius() {
     const biggest = this.getBiggestCell();
     if (biggest) {
