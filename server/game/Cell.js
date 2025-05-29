@@ -96,8 +96,8 @@ class Cell {
       this.playerId
     );
     
-    // Nadaj prędkość
-    const splitSpeed = Math.max(300, 500 - this.mass * 0.5); // Mniejsze kulki lecą szybciej
+    // Nadaj prędkość - ZMNIEJSZONA PRĘDKOŚĆ
+    const splitSpeed = Math.max(150, 300 - this.mass * 0.5); // Zmniejszone z 300/500
     newCell.velocityX = Math.cos(angle) * splitSpeed;
     newCell.velocityY = Math.sin(angle) * splitSpeed;
     newCell.splitTime = Date.now();
@@ -128,9 +128,9 @@ class Cell {
       this.playerId
     );
     
-    // Nadaj prędkość
-    ejectedCell.velocityX = Math.cos(angle) * 24;
-    ejectedCell.velocityY = Math.sin(angle) * 24;
+    // Nadaj prędkość - ZMNIEJSZONA
+    ejectedCell.velocityX = Math.cos(angle) * 200; // Zmniejszone z 400
+    ejectedCell.velocityY = Math.sin(angle) * 200;
     ejectedCell.isEjected = true;
     
     return ejectedCell;

@@ -129,13 +129,24 @@ const Canvas = forwardRef(({ playerView, onMouseMove }, ref) => {
         const startX = cameraX - viewWidth;
         const startY = cameraY - viewHeight;
         
-        // Rysuj kratkę z podwójnym marginesem we wszystkich kierunkach
-        ctx.fillRect(
-          startX,
-          startY,
-          viewWidth * 3,  // 3x szerokość widoku (lewo, środek, prawo)
-          viewHeight * 3  // 3x wysokość widoku (góra, środek, dół)
-        );
+        // Zapisz stan transformacji przed rysowaniem siatki
+        ctx.save();
+        
+        // Tymczasowo resetuj transformację dla siatki
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        
+        // Oblicz przesunięcie siatki względem kamery
+        const gridOffsetX = (startX % 50) * zoomLevel;
+        const gridOffsetY = (startY % 50) * zoomLevel;
+        
+        // Ustaw przesunięcie wzoru
+        ctx.translate(-gridOffsetX, -gridOffsetY);
+        
+        // Rysuj siatkę na całym canvasie
+        ctx.fillRect(0, 0, canvas.width + 100, canvas.height + 100);
+        
+        // Przywróć transformację
+        ctx.restore();
       }
       
       // Rysuj granice mapy

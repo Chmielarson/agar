@@ -356,9 +356,9 @@ class GameEngine {
       ejectMass
     );
     
-    // Nadaj prędkość wyrzuconej masie
-    food.velocityX = Math.cos(angle) * 24;
-    food.velocityY = Math.sin(angle) * 24;
+    // Nadaj prędkość wyrzuconej masie - SPÓJNA Z Cell.js
+    food.velocityX = Math.cos(angle) * 200;
+    food.velocityY = Math.sin(angle) * 200;
     food.zoneId = this.getZoneFromPosition(player.x, player.y);
     
     this.food.set(food.id, food);
@@ -545,8 +545,8 @@ class GameEngine {
     // Aktualizuj pozycje jedzenia
     for (const food of this.food.values()) {
       if (food.velocityX || food.velocityY) {
-        food.x += food.velocityX * deltaTime * 60;
-        food.y += food.velocityY * deltaTime * 60;
+        food.x += food.velocityX * deltaTime;
+        food.y += food.velocityY * deltaTime;
         
         // Tłumienie
         food.velocityX *= 0.95;
