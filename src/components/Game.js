@@ -245,10 +245,11 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       setPlayerView(view);
       setConnectionStatus('W grze');
       
-      // Zainicjalizuj pozycję myszy
+      // WAŻNE: Zainicjalizuj pozycję myszy na środku gracza przy pierwszym widoku
       if (view.player && inputRef.current.mouseX === 0 && inputRef.current.mouseY === 0) {
         inputRef.current.mouseX = view.player.centerX;
         inputRef.current.mouseY = view.player.centerY;
+        console.log('Inicjalizacja pozycji myszy:', inputRef.current.mouseX, inputRef.current.mouseY);
       }
     };
     
@@ -340,23 +341,34 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     }
   }, [playerView]);
   
-  // Wysyłaj input gracza
+  // WAŻNE: Wysyłaj input gracza co klatkę
   useEffect(() => {
     if (!socket || !isConnected || !publicKey || isPlayerDead) return;
     
     const sendInput = () => {
-      const input = { ...inputRef.current };
+      // Skopiuj aktualny stan inputu
+      const currentInput = {
+        mouseX: inputRef.current.mouseX,
+        mouseY: inputRef.current.mouseY,
+        split: inputRef.current.split,
+        eject: inputRef.current.eject
+      };
+      
+      // Debug co 100 klatek
+      if (Math.random() < 0.01) {
+        console.log('Wysyłanie inputu:', currentInput);
+      }
       
       socket.emit('player_input', {
         playerAddress: publicKey.toString(),
-        input: input
+        input: currentInput
       });
       
       // Broadcast akcje przez WebRTC jeśli są
-      if (webrtcManager && (input.split || input.eject)) {
+      if (webrtcManager && (currentInput.split || currentInput.eject)) {
         webrtcManager.broadcastPlayerPosition({
           type: 'action',
-          action: input.split ? 'split' : 'eject',
+          action: currentInput.split ? 'split' : 'eject',
           timestamp: Date.now()
         });
       }
@@ -371,7 +383,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     return () => clearInterval(interval);
   }, [socket, isConnected, publicKey, isPlayerDead, webrtcManager]);
   
-  // Obsługa myszy
+  // Obsługa myszy - KLUCZOWA ZMIANA
   const handleMouseMove = useCallback((e) => {
     if (!canvasRef.current || isPlayerDead) return;
     
@@ -403,8 +415,14 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       const worldX = playerView.player.centerX + (x - centerX) / zoomLevel;
       const worldY = playerView.player.centerY + (y - centerY) / zoomLevel;
       
+      // WAŻNE: Aktualizuj ref z pozycją myszy
       inputRef.current.mouseX = worldX;
       inputRef.current.mouseY = worldY;
+      
+      // Debug co jakiś czas
+      if (Math.random() < 0.01) {
+        console.log('Mouse world position:', worldX, worldY, 'Player at:', playerView.player.centerX, playerView.player.centerY);
+      }
     }
   }, [playerView, isPlayerDead]);
   
@@ -417,11 +435,13 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         case ' ':
           e.preventDefault();
           inputRef.current.split = true;
+          console.log('Space pressed - split');
           break;
         case 'w':
         case 'W':
           e.preventDefault();
           inputRef.current.eject = true;
+          console.log('W pressed - eject');
           break;
       }
     };
