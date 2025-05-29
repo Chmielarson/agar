@@ -3,6 +3,8 @@ const Player = require('./Player');
 const Food = require('./Food');
 const Physics = require('./Physics');
 const Cell = require('./Cell');
+const WorkerPoolManager = require('./WorkerPoolManager');
+const gameBalance = require('../config/gameBalance');
 
 class GameEngine {
   constructor() {
