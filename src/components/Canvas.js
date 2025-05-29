@@ -109,7 +109,26 @@ const Canvas = forwardRef(({ playerView, onMouseMove }, ref) => {
       const offsetX = canvas.width / 2 / zoomLevel - cameraX;
       const offsetY = canvas.height / 2 / zoomLevel - cameraY;
       
-      // Zapisz stan kontekstu
+      // NAJPIERW rysuj siatkę PRZED transformacjami
+      if (gridPatternRef.current) {
+        ctx.save();
+        
+        // Oblicz przesunięcie siatki względem kamery
+        const gridSize = 50;
+        const gridOffsetX = ((cameraX - canvas.width / 2 / zoomLevel) % gridSize) * zoomLevel;
+        const gridOffsetY = ((cameraY - canvas.height / 2 / zoomLevel) % gridSize) * zoomLevel;
+        
+        // Przesuń wzór siatki
+        ctx.translate(-gridOffsetX, -gridOffsetY);
+        
+        // Rysuj siatkę
+        ctx.fillStyle = gridPatternRef.current;
+        ctx.fillRect(0, 0, canvas.width + gridSize * zoomLevel, canvas.height + gridSize * zoomLevel);
+        
+        ctx.restore();
+      }
+      
+      // Teraz zastosuj transformacje dla reszty elementów gry
       ctx.save();
       
       // Zastosuj zoom
@@ -117,37 +136,6 @@ const Canvas = forwardRef(({ playerView, onMouseMove }, ref) => {
       
       // Przesuń canvas
       ctx.translate(offsetX, offsetY);
-      
-      // Rysuj tło z siatką na całym widocznym obszarze
-      if (gridPatternRef.current) {
-        ctx.fillStyle = gridPatternRef.current;
-        // Oblicz widoczny obszar w jednostkach świata gry
-        const viewWidth = canvas.width / zoomLevel;
-        const viewHeight = canvas.height / zoomLevel;
-        
-        // Punkt startowy - lewy górny róg widoku z dużym marginesem
-        const startX = cameraX - viewWidth;
-        const startY = cameraY - viewHeight;
-        
-        // Zapisz stan transformacji przed rysowaniem siatki
-        ctx.save();
-        
-        // Tymczasowo resetuj transformację dla siatki
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        
-        // Oblicz przesunięcie siatki względem kamery
-        const gridOffsetX = (startX % 50) * zoomLevel;
-        const gridOffsetY = (startY % 50) * zoomLevel;
-        
-        // Ustaw przesunięcie wzoru
-        ctx.translate(-gridOffsetX, -gridOffsetY);
-        
-        // Rysuj siatkę na całym canvasie
-        ctx.fillRect(0, 0, canvas.width + 100, canvas.height + 100);
-        
-        // Przywróć transformację
-        ctx.restore();
-      }
       
       // Rysuj granice mapy
       if (gameState?.mapSize) {
