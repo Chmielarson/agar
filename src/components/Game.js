@@ -79,10 +79,18 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     }
     
     console.log('Konfiguracja połączenia z grą...');
-    setConnectionStatus('Dołączanie do gry...');
+    setConnectionStatus('Łączenie z serwerem...');
     
-    // Funkcja do dołączenia/ponownego dołączenia do gry
+    let isComponentMounted = true;
+    let hasJoinedGame = false;
+    
+    // Funkcja do dołączenia do gry
     const joinGame = () => {
+      if (!isComponentMounted || hasJoinedGame) {
+        console.log('Pomijam join_game - komponent odmontowany lub już dołączył');
+        return;
+      }
+      
       console.log('Wysyłanie join_game:', {
         playerAddress: publicKey.toString(),
         nickname,
@@ -91,11 +99,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         connected: socket.connected
       });
       
-      if (!socket.connected) {
-        console.log('Socket nie jest połączony, czekam na połączenie...');
-        setConnectionStatus('Łączenie z serwerem...');
-        return;
-      }
+      hasJoinedGame = true;
       
       socket.emit('join_game', {
         playerAddress: publicKey.toString(),
@@ -109,7 +113,7 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       }
       
       joinTimeoutRef.current = setTimeout(() => {
-        if (!playerView) {
+        if (!playerView && isComponentMounted) {
           console.error('Timeout czekania na player view');
           setConnectionStatus('Serwer nie odpowiada - spróbuj odświeżyć');
           setError('Nie udało się otrzymać danych gry z serwera. Odśwież stronę i spróbuj ponownie.');
@@ -117,22 +121,24 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       }, 10000); // 10 sekund timeout
     };
     
-    // Monitor connection state
+    // Event handlers
     const handleConnect = () => {
       console.log('Socket połączony:', socket.id);
       setConnectionStatus('Połączono - dołączam do gry...');
-      // Automatycznie dołącz do gry po połączeniu
-      setTimeout(joinGame, 100); // Małe opóźnienie dla stabilności
+      // Dołącz do gry po połączeniu
+      joinGame();
     };
     
     const handleDisconnect = (reason) => {
       console.log('Socket rozłączony:', reason);
       setIsConnected(false);
       setConnectionStatus('Rozłączono z serwerem');
+      hasJoinedGame = false; // Reset flagi przy rozłączeniu
       
       if (reason === 'io server disconnect') {
-        // Serwer rozłączył klienta
         setError('Zostałeś rozłączony przez serwer');
+      } else if (reason === 'transport error') {
+        setError('Błąd połączenia - sprawdź czy serwer działa');
       }
     };
     
@@ -142,39 +148,21 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       setError(`Błąd połączenia: ${error.message}`);
     };
     
-    // Rejestruj handlery połączenia
-    socket.on('connect', handleConnect);
-    socket.on('disconnect', handleDisconnect);
-    socket.on('connect_error', handleConnectError);
-    
-    // Jeśli już połączony, dołącz od razu
-    if (socket.connected) {
-      console.log('Socket już połączony, dołączam do gry...');
-      joinGame();
-    } else {
-      console.log('Socket nie jest połączony, czekam na połączenie...');
-      setConnectionStatus('Łączenie z serwerem...');
-    }
-    
-    // Set up event listeners
     const handleJoinedGame = (data) => {
       console.log('Otrzymano joined_game:', data);
       if (data.success) {
         setIsConnected(true);
         setConnectionStatus('Połączono z grą - czekam na widok');
+        setError(''); // Wyczyść błędy
       } else {
         setConnectionStatus('Nie udało się dołączyć do gry');
         setError(data.error || 'Nieznany błąd');
+        hasJoinedGame = false; // Reset flagi jeśli błąd
       }
     };
     
     const handleGameState = (state) => {
-      console.log('Otrzymano game_state:', {
-        playerCount: state.playerCount,
-        foodCount: state.foodCount,
-        mapSize: state.mapSize,
-        timestamp: new Date().toISOString()
-      });
+      console.log('Otrzymano game_state - gracze:', state.playerCount);
       setGameState(state);
     };
     
@@ -184,30 +172,21 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         return;
       }
       
-      console.log('Otrzymano player_view:', {
-        hasPlayer: !!view.player,
-        playerAlive: view.player?.isAlive,
-        playerCells: view.player?.cells?.length || 0,
-        centerPos: view.player ? `${Math.floor(view.player.centerX)}, ${Math.floor(view.player.centerY)}` : 'N/A',
-        playersCount: view.players?.length || 0,
-        foodCount: view.food?.length || 0,
-        canCashOut: view.player?.canCashOut,
-        combatCooldown: view.player?.combatCooldownRemaining,
-        timestamp: new Date().toISOString()
-      });
+      console.log('Otrzymano player_view - pozycja:', 
+        view.player ? `(${Math.floor(view.player.centerX)}, ${Math.floor(view.player.centerY)})` : 'brak'
+      );
       
-      // Wyczyść timeout skoro dostaliśmy widok
+      // Wyczyść timeout
       if (joinTimeoutRef.current) {
         clearTimeout(joinTimeoutRef.current);
         joinTimeoutRef.current = null;
       }
       
-      // Wyczyść błędy gdy dostaniemy poprawny widok
       setError('');
       setPlayerView(view);
       setConnectionStatus('W grze');
       
-      // Zainicjalizuj pozycję myszy do środka gracza
+      // Zainicjalizuj pozycję myszy
       if (view.player && inputRef.current.mouseX === 0 && inputRef.current.mouseY === 0) {
         inputRef.current.mouseX = view.player.centerX;
         inputRef.current.mouseY = view.player.centerY;
@@ -220,7 +199,6 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
         setIsPlayerDead(true);
         setDeathReason(data.reason || 'Zostałeś zjedzony przez innego gracza!');
         setPlayerView(null);
-        // Wyczyść zapisany stan gry
         localStorage.removeItem('dotara_io_game_state');
         localStorage.removeItem('dotara_io_pending_cashout');
       }
@@ -235,7 +213,8 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       console.error('Błąd gry:', error);
       setConnectionStatus(`Błąd: ${error.message || error}`);
       setError(error.message || error);
-      // Jeśli błąd dotyczy bycia zjedzonym, pokaż ekran śmierci
+      hasJoinedGame = false; // Reset flagi przy błędzie
+      
       if (error.message && error.message.includes('eaten')) {
         setIsPlayerDead(true);
         setDeathReason(error.message);
@@ -243,7 +222,21 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
       }
     };
     
-    // Zarejestruj wszystkie event listenery
+    // Najpierw usuń wszystkie stare listenery
+    socket.off('connect');
+    socket.off('disconnect');
+    socket.off('connect_error');
+    socket.off('joined_game');
+    socket.off('game_state');
+    socket.off('player_view');
+    socket.off('player_eliminated');
+    socket.off('cash_out_result');
+    socket.off('error');
+    
+    // Zarejestruj nowe listenery
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('connect_error', handleConnectError);
     socket.on('joined_game', handleJoinedGame);
     socket.on('game_state', handleGameState);
     socket.on('player_view', handlePlayerView);
@@ -251,23 +244,34 @@ export default function Game({ initialStake, nickname, onLeaveGame, setPendingCa
     socket.on('cash_out_result', handleCashOutResult);
     socket.on('error', handleError);
     
+    // Sprawdź czy socket jest już połączony
+    if (socket.connected) {
+      console.log('Socket już połączony przy mount, dołączam do gry...');
+      handleConnect(); // Wywołaj ręcznie jeśli już połączony
+    } else {
+      console.log('Socket nie jest połączony, czekam na event connect...');
+    }
+    
     // Cleanup
     return () => {
       console.log('Czyszczenie połączenia z grą');
+      isComponentMounted = false;
+      
       if (joinTimeoutRef.current) {
         clearTimeout(joinTimeoutRef.current);
       }
+      
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('connect_error', handleConnectError);
       socket.off('joined_game', handleJoinedGame);
       socket.off('game_state', handleGameState);
       socket.off('player_view', handlePlayerView);
       socket.off('player_eliminated', handlePlayerEliminated);
       socket.off('cash_out_result', handleCashOutResult);
       socket.off('error', handleError);
-      socket.off('connect', handleConnect);
-      socket.off('disconnect', handleDisconnect);
-      socket.off('connect_error', handleConnectError);
     };
-  }, [socket, publicKey, nickname, initialStake, onLeaveGame]);
+  }, [socket, publicKey, nickname, initialStake]); // Usuń onLeaveGame z dependencies
   
   // Wyczyść timeout gdy dostaniemy player view
   useEffect(() => {
