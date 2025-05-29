@@ -118,14 +118,18 @@ const Canvas = forwardRef(({ playerView, onMouseMove }, ref) => {
       // Przesuń canvas
       ctx.translate(offsetX, offsetY);
       
-      // Rysuj tło z siatką
+      // Rysuj tło z siatką na całym widocznym obszarze
       if (gridPatternRef.current) {
         ctx.fillStyle = gridPatternRef.current;
+        // Oblicz obszar do pokrycia z marginesem
+        const viewportSize = Math.max(canvas.width, canvas.height) / zoomLevel;
+        const margin = viewportSize; // Duży margines dla pewności
+        
         ctx.fillRect(
-          Math.floor(cameraX / 50) * 50 - 100,
-          Math.floor(cameraY / 50) * 50 - 100,
-          (canvas.width / zoomLevel) + 200,
-          (canvas.height / zoomLevel) + 200
+          cameraX - viewportSize - margin,
+          cameraY - viewportSize - margin,
+          viewportSize * 2 + margin * 2,
+          viewportSize * 2 + margin * 2
         );
       }
       
