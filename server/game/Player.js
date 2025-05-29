@@ -1,4 +1,3 @@
-// server/game/Player.js
 const Cell = require('./Cell');
 
 class Player {
@@ -78,16 +77,30 @@ class Player {
   
   // Pobierz największą kulkę
   getBiggestCell() {
+    if (this.cells.length === 0) return null;
     return this.cells.reduce((biggest, cell) => 
       cell.mass > biggest.mass ? cell : biggest
     );
   }
   
+  // NOWA METODA - Oblicz promień gracza
+  calculateRadius() {
+    const biggest = this.getBiggestCell();
+    if (biggest) {
+      return biggest.radius;
+    }
+    // Jeśli nie ma kulek, oblicz na podstawie masy
+    const totalMass = this.getTotalMass();
+    if (totalMass > 0) {
+      return Math.sqrt(totalMass / Math.PI) * 5;
+    }
+    // Domyślny promień
+    return Math.sqrt(20 / Math.PI) * 5;
+  }
+  
   // Oblicz promień gracza (dla kompatybilności)
   get radius() {
-    // Zwróć promień największej kulki
-    const biggest = this.getBiggestCell();
-    return biggest ? biggest.radius : 0;
+    return this.calculateRadius();
   }
   
   // Pozycja gracza (dla kompatybilności)
@@ -111,6 +124,8 @@ class Player {
     if (this.cells.length === 0) return;
     
     const totalMass = this.getTotalMass();
+    if (totalMass === 0) return;
+    
     const ratio = value / totalMass;
     
     for (const cell of this.cells) {
@@ -248,8 +263,10 @@ class Player {
     } else if (this.cells.length > 0) {
       // Dodaj do największej kulki
       const biggest = this.getBiggestCell();
-      biggest.mass += foodMass;
-      biggest.updateRadius();
+      if (biggest) {
+        biggest.mass += foodMass;
+        biggest.updateRadius();
+      }
     }
     
     this.score += Math.floor(foodMass);
@@ -305,17 +322,19 @@ class Player {
   
   canSplit() {
     const now = Date.now();
+    const biggestCell = this.getBiggestCell();
     return (
       this.cells.length < this.maxCells &&
-      this.getBiggestCell().mass >= 35 && 
+      biggestCell && biggestCell.mass >= 35 && 
       now - this.lastSplitTime > this.splitCooldown
     );
   }
   
   canEject() {
     const now = Date.now();
+    const biggestCell = this.getBiggestCell();
     return (
-      this.getBiggestCell().mass >= 35 && 
+      biggestCell && biggestCell.mass >= 35 && 
       now - this.lastEjectTime > this.ejectCooldown
     );
   }
@@ -350,6 +369,8 @@ class Player {
     
     // Wyrzuć z największej kulki
     const biggestCell = this.getBiggestCell();
+    if (!biggestCell) return null;
+    
     const ejectedMass = biggestCell.eject(this.targetX, this.targetY);
     
     this.lastEjectTime = Date.now();
