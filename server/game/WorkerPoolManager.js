@@ -27,7 +27,10 @@ class WorkerPoolManager {
   }
   
   async createWorker(zoneId) {
-    const workerPath = path.join(__dirname, '../workers/physicsWorker.js');
+    const workerPath = '/home/dotara/agar/server/workers/physicsWorker.js';
+
+    console.log('Creating worker with path:', workerPath);
+    console.log('Path exists:', require('fs').existsSync(workerPath));
     
     const worker = new Worker(workerPath, {
       workerData: {
