@@ -40,7 +40,7 @@ class GameEngine {
     
     // Nowe komponenty
     this.workerPool = null;
-    this.useWorkers = true; // Można wyłączyć dla debugowania
+    this.useWorkers = false; // Można wyłączyć dla debugowania
     this.balance = gameBalance; // Konfiguracja balansu
     
     // Callback dla blockchain updates
